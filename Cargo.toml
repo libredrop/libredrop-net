@@ -1,0 +1,23 @@
+[package]
+authors = ["Povilas Balciunas <balciunas90@gmail.com>"]
+name = "libredrop-net"
+version = "0.1.0"
+
+[dependencies]
+bincode = "1.0.1"
+bytes = "0.4.10"
+future-utils = "0.12.1"
+futures = "0.1.25"
+get_if_addrs = "0.5.3"
+log = "0.4.6"
+maidsafe_utilities = "0.17.0"
+net-literals = "0.1.2"
+safe_crypto = "0.5.0"
+serde = "1.0.80"
+serde_derive = "1.0.80"
+tokio = "0.1.11"
+unwrap = "1.2.1"
+void = "1.0.2"
+
+[dev-dependencies]
+hamcrest2 = "0.2.3"
