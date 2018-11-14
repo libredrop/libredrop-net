@@ -1,5 +1,11 @@
 //! Demontrates how to setup peer discovery server.
 //! This server will respond to whoever is looking for peers on LAN.
+//!
+//! Execute this command to start listening for discovery messages:
+//!
+//! ```
+//! $ RUST_LOG=info cargo run --example peer_discovery_server
+//! ```
 
 extern crate get_if_addrs;
 extern crate libredrop_net;

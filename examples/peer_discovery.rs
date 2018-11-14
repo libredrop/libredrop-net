@@ -1,4 +1,9 @@
 //! Demontrates how to discover peers on LAN.
+//!
+//! Run the server on other (or same) machine on LAN and then run:
+//! ```
+//! $ RUST_LOG=info cargo run --example peer_discovery
+//! ```
 
 extern crate env_logger;
 extern crate libredrop_net;
