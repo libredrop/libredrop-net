@@ -127,8 +127,8 @@ impl Future for DiscoveryServer {
     }
 }
 
-/// Search peers on LAN.
-pub fn discover_peers(port: u16) -> impl Stream<Item = Vec<SocketAddr>, Error = DiscoveryError> {
+/// Broadcast peer discovery request and wait for response.
+pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<SocketAddr>, Error = DiscoveryError> {
     let broadcast_to = try_bstream!(broadcast_addrs(port).map_err(DiscoveryError::Io));
     let (our_pk, our_sk) = gen_encrypt_keypair();
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_peers_broadcasts_requests_on_lan_and_collects_peer_addresses() {
+    fn shout_for_peers_broadcasts_requests_on_lan_and_collects_peer_addresses() {
         let mut evloop = unwrap!(Runtime::new());
 
         let server = unwrap!(DiscoveryServer::new(
@@ -215,7 +215,7 @@ mod tests {
         ));
         let server_port = server.port();
 
-        let task = discover_peers(server_port)
+        let task = shout_for_peers(server_port)
             .collect()
             .with_timeout(Duration::from_secs(10))
             .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
