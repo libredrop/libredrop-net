@@ -12,12 +12,10 @@ extern crate libredrop_net;
 #[macro_use]
 extern crate unwrap;
 extern crate env_logger;
-extern crate future_utils;
 extern crate tokio;
 #[macro_use]
 extern crate log;
 
-use future_utils::FutureExt;
 use get_if_addrs::{get_if_addrs, IfAddr};
 use libredrop_net::DiscoveryServer;
 use std::io;
@@ -34,8 +32,7 @@ fn main() -> io::Result<()> {
     let server = unwrap!(DiscoveryServer::new(6000, addrs));
     let run_server = server
         .map(|_| ())
-        .log_error(log::LogLevel::Error, "Peer discovery server failure")
-        .map_err(|_| ());
+        .map_err(|e| error!("Peer discovery server failure: {:?}", e));
     tokio::run(run_server);
 
     Ok(())

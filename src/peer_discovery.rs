@@ -16,6 +16,43 @@ macro_rules! try_bstream {
     };
 }
 
+/// Search for peers on LAN and at the same time handle other discovery requests on a given port.
+/// This functions wraps `DiscoveryServer` and `shout_for_peers()` and probably will be used
+/// the most for it's easiest API.
+pub fn discover_peers(
+    port: u16,
+    our_addrs: Vec<SocketAddr>,
+) -> Result<impl Stream<Item = Vec<SocketAddr>, Error = DiscoveryError>, DiscoveryError> {
+    DiscoverPeers::new(port, our_addrs)
+}
+
+struct DiscoverPeers {
+    // future that never resolves
+    server: DiscoveryServer,
+    // stream of peer discovery requests awaiting for response
+    send_reqs: BoxStream<Vec<SocketAddr>, DiscoveryError>,
+}
+
+impl DiscoverPeers {
+    fn new(port: u16, our_addrs: Vec<SocketAddr>) -> Result<Self, DiscoveryError> {
+        let server = DiscoveryServer::new(port, our_addrs)?;
+        let send_reqs = shout_for_peers(port).into_boxed();
+        Ok(Self { server, send_reqs })
+    }
+}
+
+impl Stream for DiscoverPeers {
+    type Item = Vec<SocketAddr>;
+    type Error = DiscoveryError;
+
+    /// Send peer discovery messages while also driving the discovery server.
+    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        self.server.poll()?;
+        // TODO(povilas): filter out self responses
+        self.send_reqs.poll()
+    }
+}
+
 // TODO(povilas): use failure crate for errors
 /// Peers discovery error.
 #[derive(Debug)]
@@ -55,9 +92,10 @@ pub struct DiscoveryServer {
 
 impl DiscoveryServer {
     /// Constructs new peer discovery server that listens for requests on a given port.
-    pub fn new(port: u16, our_addrs: Vec<SocketAddr>) -> io::Result<Self> {
-        let listener = UdpSocket::bind(&SocketAddr::V4(SocketAddrV4::new(ipv4!("0.0.0.0"), port)))?;
-        let port = listener.local_addr()?.port();
+    pub fn new(port: u16, our_addrs: Vec<SocketAddr>) -> Result<Self, DiscoveryError> {
+        let listener = UdpSocket::bind(&SocketAddr::V4(SocketAddrV4::new(ipv4!("0.0.0.0"), port)))
+            .map_err(DiscoveryError::Io)?;
+        let port = listener.local_addr().map_err(DiscoveryError::Io)?.port();
         Ok(Self {
             listener,
             our_addrs: our_addrs,
@@ -118,11 +156,11 @@ impl DiscoveryServer {
 
 impl Future for DiscoveryServer {
     type Item = Void;
-    type Error = io::Error;
+    type Error = DiscoveryError;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        self.poll_requests()?;
-        self.poll_send_responses()?;
+        self.poll_requests().map_err(DiscoveryError::Io)?;
+        self.poll_send_responses().map_err(DiscoveryError::Io)?;
         Ok(Async::NotReady)
     }
 }
@@ -195,7 +233,7 @@ mod tests {
             .map(|buf_opt| {
                 let buf = unwrap!(buf_opt);
                 unwrap!(our_sk.anonymously_decrypt(&buf, &our_pk))
-            }).while_driving(server.map_err(DiscoveryError::Io));
+            }).while_driving(server);
 
         match evloop.block_on(send_req) {
             Ok((DiscoveryMsg::Response(addrs), _server_task)) => {
@@ -219,7 +257,7 @@ mod tests {
             .collect()
             .with_timeout(Duration::from_secs(10))
             .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
-            .while_driving(server.map_err(DiscoveryError::Io));
+            .while_driving(server);
 
         match evloop.block_on(task) {
             Ok((their_addrs, _server_task)) => {
