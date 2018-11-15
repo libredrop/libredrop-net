@@ -217,6 +217,8 @@ mod tests {
 
         let task = discover_peers(server_port)
             .collect()
+            .with_timeout(Duration::from_secs(10))
+            .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
             .while_driving(server.map_err(DiscoveryError::Io));
 
         match evloop.block_on(task) {
