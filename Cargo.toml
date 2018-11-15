@@ -22,4 +22,3 @@ void = "1.0.2"
 [dev-dependencies]
 env_logger = "0.6.0"
 hamcrest2 = "0.2.3"
-log = "0.4.6"
