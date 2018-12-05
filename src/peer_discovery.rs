@@ -22,27 +22,32 @@ macro_rules! try_bstream {
 pub fn discover_peers(
     port: u16,
     our_addrs: Vec<SocketAddr>,
-) -> Result<impl Stream<Item = Vec<SocketAddr>, Error = DiscoveryError>, DiscoveryError> {
-    DiscoverPeers::new(port, our_addrs)
+    our_pk: PublicEncryptKey,
+) -> Result<impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError>, DiscoveryError> {
+    DiscoverPeers::new(port, our_addrs, our_pk)
 }
 
 struct DiscoverPeers {
     // future that never resolves
     server: DiscoveryServer,
     // stream of peer discovery requests awaiting for response
-    send_reqs: BoxStream<Vec<SocketAddr>, DiscoveryError>,
+    send_reqs: BoxStream<Vec<PeerInfo>, DiscoveryError>,
 }
 
 impl DiscoverPeers {
-    fn new(port: u16, our_addrs: Vec<SocketAddr>) -> Result<Self, DiscoveryError> {
-        let server = DiscoveryServer::new(port, our_addrs)?;
+    fn new(
+        port: u16,
+        our_addrs: Vec<SocketAddr>,
+        our_pk: PublicEncryptKey,
+    ) -> Result<Self, DiscoveryError> {
+        let server = DiscoveryServer::new(port, our_addrs, our_pk)?;
         let send_reqs = shout_for_peers(port).into_boxed();
         Ok(Self { server, send_reqs })
     }
 }
 
 impl Stream for DiscoverPeers {
-    type Item = Vec<SocketAddr>;
+    type Item = Vec<PeerInfo>;
     type Error = DiscoveryError;
 
     /// Send peer discovery messages while also driving the discovery server.
@@ -68,7 +73,7 @@ enum DiscoveryMsg {
     Request(PublicEncryptKey),
     // TODO(povilas): include their public key
     /// Addresses that the peer is accessible with.
-    Response(Vec<SocketAddr>),
+    Response(Vec<PeerInfo>),
 }
 
 impl DiscoveryMsg {
@@ -85,6 +90,7 @@ pub struct DiscoveryServer {
     listener: UdpSocket,
     /// Addresses peer discovery will respond with.
     our_addrs: Vec<SocketAddr>,
+    our_pk: PublicEncryptKey,
     port: u16,
     /// Clients still waiting for response.
     clients: Vec<(SocketAddr, PublicEncryptKey)>,
@@ -92,13 +98,18 @@ pub struct DiscoveryServer {
 
 impl DiscoveryServer {
     /// Constructs new peer discovery server that listens for requests on a given port.
-    pub fn new(port: u16, our_addrs: Vec<SocketAddr>) -> Result<Self, DiscoveryError> {
+    pub fn new(
+        port: u16,
+        our_addrs: Vec<SocketAddr>,
+        our_pk: PublicEncryptKey,
+    ) -> Result<Self, DiscoveryError> {
         let listener = UdpSocket::bind(&SocketAddr::V4(SocketAddrV4::new(ipv4!("0.0.0.0"), port)))
             .map_err(DiscoveryError::Io)?;
         let port = listener.local_addr().map_err(DiscoveryError::Io)?.port();
         Ok(Self {
             listener,
-            our_addrs: our_addrs,
+            our_addrs,
+            our_pk,
             port,
             clients: Vec::new(),
         })
@@ -149,7 +160,12 @@ impl DiscoveryServer {
 
     /// Encrypt response with their public key.
     fn make_response(&self, their_pk: &PublicEncryptKey) -> Option<Vec<u8>> {
-        let resp = DiscoveryMsg::Response(self.our_addrs.clone());
+        let our_addrs = self
+            .our_addrs
+            .iter()
+            .map(|addr| PeerInfo::new(*addr, self.our_pk))
+            .collect();
+        let resp = DiscoveryMsg::Response(our_addrs);
         their_pk.anonymously_encrypt(&resp).ok()
     }
 }
@@ -166,7 +182,7 @@ impl Future for DiscoveryServer {
 }
 
 /// Broadcast peer discovery request and wait for response.
-pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<SocketAddr>, Error = DiscoveryError> {
+pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError> {
     let broadcast_to = try_bstream!(broadcast_addrs(port).map_err(DiscoveryError::Io));
     let (our_pk, our_sk) = gen_encrypt_keypair();
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
@@ -189,7 +205,7 @@ pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<SocketAddr>, Error =
 }
 
 // TODO(povilas): netsim test for this
-/// Returns broadcast addresses for all network intefaces on the system.
+/// Returns broadcast addresses for all network interfaces on the system.
 fn broadcast_addrs(port: u16) -> io::Result<Vec<SocketAddr>> {
     let addrs = get_if_addrs()?;
     Ok(addrs
@@ -218,7 +234,12 @@ mod tests {
     fn server_responds() {
         let mut evloop = unwrap!(Runtime::new());
 
-        let server = unwrap!(DiscoveryServer::new(0, vec![addr!("192.168.1.100:1234")]));
+        let (server_pk, _sk) = gen_encrypt_keypair();
+        let server = unwrap!(DiscoveryServer::new(
+            0,
+            vec![addr!("192.168.1.100:1234")],
+            server_pk
+        ));
         let server_addr = SocketAddr::V4(SocketAddrV4::new(ipv4!("127.0.0.1"), server.port()));
         let sock = unwrap!(UdpSocket::bind(&addr!("0.0.0.0:0")));
 
@@ -237,7 +258,10 @@ mod tests {
 
         match evloop.block_on(send_req) {
             Ok((DiscoveryMsg::Response(addrs), _server_task)) => {
-                assert_that!(addrs, eq(vec![addr!("192.168.1.100:1234")]));
+                assert_that!(
+                    addrs,
+                    eq(vec![PeerInfo::new(addr!("192.168.1.100:1234"), server_pk)])
+                );
             }
             _ => panic!("Failed to send peer discovery request"),
         }
@@ -247,9 +271,11 @@ mod tests {
     fn shout_for_peers_broadcasts_requests_on_lan_and_collects_peer_addresses() {
         let mut evloop = unwrap!(Runtime::new());
 
+        let (server_pk, _sk) = gen_encrypt_keypair();
         let server = unwrap!(DiscoveryServer::new(
             0,
-            vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")]
+            vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
+            server_pk,
         ));
         let server_port = server.port();
 
@@ -264,8 +290,8 @@ mod tests {
                 assert_that!(
                     their_addrs,
                     eq(vec![vec![
-                        addr!("192.168.1.100:1234"),
-                        addr!("127.0.0.1:1234")
+                        PeerInfo::new(addr!("192.168.1.100:1234"), server_pk),
+                        PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
                     ]])
                 );
             }

@@ -15,10 +15,12 @@ extern crate tokio;
 #[macro_use]
 extern crate unwrap;
 extern crate get_if_addrs;
+extern crate safe_crypto;
 
 use futures::Stream;
 use get_if_addrs::{get_if_addrs, IfAddr};
 use libredrop_net::discover_peers;
+use safe_crypto::gen_encrypt_keypair;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
 use tokio::runtime::current_thread::Runtime;
@@ -29,7 +31,8 @@ fn main() -> io::Result<()> {
 
     info!("Looking for peers on LAN on port 6000");
     let addrs = our_addrs(1234)?;
-    let find_peers = unwrap!(discover_peers(6000, addrs))
+    let (our_pk, _our_sk) = gen_encrypt_keypair();
+    let find_peers = unwrap!(discover_peers(6000, addrs, our_pk))
         .map_err(|e| error!("Peer discovery failed: {:?}", e))
         .for_each(|addrs| {
             println!("Peer is listening on: {:?}", addrs);

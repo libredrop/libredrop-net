@@ -15,9 +15,11 @@ extern crate env_logger;
 extern crate tokio;
 #[macro_use]
 extern crate log;
+extern crate safe_crypto;
 
 use get_if_addrs::{get_if_addrs, IfAddr};
 use libredrop_net::DiscoveryServer;
+use safe_crypto::gen_encrypt_keypair;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
 use tokio::prelude::Future;
@@ -29,7 +31,8 @@ fn main() -> io::Result<()> {
     let addrs = our_addrs(1234)?;
     info!("Our advertised addresses: {:?}", addrs);
 
-    let server = unwrap!(DiscoveryServer::new(6000, addrs));
+    let (our_pk, _our_sk) = gen_encrypt_keypair();
+    let server = unwrap!(DiscoveryServer::new(6000, addrs, our_pk));
     let run_server = server
         .map(|_| ())
         .map_err(|e| error!("Peer discovery server failure: {:?}", e));

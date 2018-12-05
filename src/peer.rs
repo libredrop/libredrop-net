@@ -8,3 +8,10 @@ pub struct PeerInfo {
     /// Peer public key.
     pub pub_key: PublicEncryptKey,
 }
+
+impl PeerInfo {
+    /// Constructs peer info.
+    pub fn new(addr: SocketAddr, pub_key: PublicEncryptKey) -> Self {
+        Self { addr, pub_key }
+    }
+}
