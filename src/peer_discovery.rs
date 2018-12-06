@@ -18,7 +18,7 @@ macro_rules! try_bstream {
 
 /// Search for peers on LAN and at the same time handle other discovery requests on a given port.
 /// This functions wraps `DiscoveryServer` and `shout_for_peers()` and probably will be used
-/// the most for it's easiest API.
+/// the most for its easiest API.
 pub fn discover_peers(
     port: u16,
     our_addrs: Vec<SocketAddr>,
@@ -134,7 +134,12 @@ impl DiscoveryServer {
 
     fn on_packet_recv(&mut self, buf: &[u8], sender_addr: SocketAddr) {
         match bincode::deserialize(buf) {
-            Ok(DiscoveryMsg::Request(their_pk)) => self.clients.push((sender_addr, their_pk)),
+            Ok(DiscoveryMsg::Request(their_pk)) => {
+                if their_pk != self.our_pk {
+                    // don't respond to ourselves
+                    self.clients.push((sender_addr, their_pk))
+                }
+            }
             // TODO(povilas): prevent from DDOSing logs and put upper limit for logged buffer
             _ => warn!("Invalid peer discovery request: {:?}", buf),
         }
@@ -189,6 +194,7 @@ pub fn shout_for_peers(
 ) -> impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError> {
     let broadcast_to = try_bstream!(broadcast_addrs(port).map_err(DiscoveryError::Io));
     let (our_pk, our_sk) = (*our_pk, our_sk.clone());
+    let our_pk2 = our_pk;
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
 
     stream::iter_ok(broadcast_to)
@@ -204,8 +210,14 @@ pub fn shout_for_peers(
                 Ok(DiscoveryMsg::Response(their_addrs)) => Ok(their_addrs),
                 _ => Err(DiscoveryError::InvalidResponse),
             }
-        }).into_boxed()
-    // TODO(povilas): filter out self responses
+        }).map(move |peers| {
+            peers
+                .iter()
+                .filter(|peer| peer.pub_key != our_pk2)
+                .cloned()
+                .collect()
+        }).filter(|peers: &Vec<PeerInfo>| !peers.is_empty())
+        .into_boxed()
 }
 
 // TODO(povilas): netsim test for this
@@ -271,36 +283,64 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shout_for_peers_broadcasts_requests_on_lan_and_collects_peer_addresses() {
-        let mut evloop = unwrap!(Runtime::new());
+    mod shout_for_peers {
+        use super::*;
 
-        let (server_pk, _server_sk) = gen_encrypt_keypair();
-        let server = unwrap!(DiscoveryServer::new(
-            0,
-            vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
-            &server_pk,
-        ));
-        let server_port = server.port();
+        #[test]
+        fn it_broadcasts_requests_on_lan_and_collects_peer_addresses() {
+            let mut evloop = unwrap!(Runtime::new());
 
-        let (our_pk, our_sk) = gen_encrypt_keypair();
-        let task = shout_for_peers(server_port, &our_pk, &our_sk)
-            .collect()
-            .with_timeout(Duration::from_secs(10))
-            .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
-            .while_driving(server);
+            let (server_pk, _server_sk) = gen_encrypt_keypair();
+            let server = unwrap!(DiscoveryServer::new(
+                0,
+                vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
+                &server_pk,
+            ));
+            let server_port = server.port();
 
-        match evloop.block_on(task) {
-            Ok((their_addrs, _server_task)) => {
-                assert_that!(
-                    their_addrs,
-                    eq(vec![vec![
-                        PeerInfo::new(addr!("192.168.1.100:1234"), server_pk),
-                        PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
-                    ]])
-                );
+            let (our_pk, our_sk) = gen_encrypt_keypair();
+            let task = shout_for_peers(server_port, &our_pk, &our_sk)
+                .collect()
+                .with_timeout(Duration::from_secs(10))
+                .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
+                .while_driving(server);
+
+            match evloop.block_on(task) {
+                Ok((their_addrs, _server_task)) => {
+                    assert_that!(
+                        their_addrs,
+                        eq(vec![vec![
+                            PeerInfo::new(addr!("192.168.1.100:1234"), server_pk),
+                            PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
+                        ]])
+                    );
+                }
+                _ => panic!("Peer discovery failed"),
             }
-            _ => panic!("Peer discovery failed"),
+        }
+
+        #[test]
+        fn it_filters_responses_from_self() {
+            let mut evloop = unwrap!(Runtime::new());
+
+            let (server_pk, server_sk) = gen_encrypt_keypair();
+            let server = unwrap!(DiscoveryServer::new(
+                0,
+                vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
+                &server_pk,
+            ));
+            let server_port = server.port();
+
+            let task = shout_for_peers(server_port, &server_pk, &server_sk)
+                .collect()
+                .with_timeout(Duration::from_secs(10))
+                .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
+                .while_driving(server);
+
+            match evloop.block_on(task) {
+                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs, empty()),
+                _ => panic!("Peer discovery failed"),
+            }
         }
     }
 }
