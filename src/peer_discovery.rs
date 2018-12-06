@@ -22,9 +22,10 @@ macro_rules! try_bstream {
 pub fn discover_peers(
     port: u16,
     our_addrs: Vec<SocketAddr>,
-    our_pk: PublicEncryptKey,
+    our_pk: &PublicEncryptKey,
+    our_sk: &SecretEncryptKey,
 ) -> Result<impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError>, DiscoveryError> {
-    DiscoverPeers::new(port, our_addrs, our_pk)
+    DiscoverPeers::new(port, our_addrs, our_pk, our_sk)
 }
 
 struct DiscoverPeers {
@@ -38,10 +39,11 @@ impl DiscoverPeers {
     fn new(
         port: u16,
         our_addrs: Vec<SocketAddr>,
-        our_pk: PublicEncryptKey,
+        our_pk: &PublicEncryptKey,
+        our_sk: &SecretEncryptKey,
     ) -> Result<Self, DiscoveryError> {
         let server = DiscoveryServer::new(port, our_addrs, our_pk)?;
-        let send_reqs = shout_for_peers(port).into_boxed();
+        let send_reqs = shout_for_peers(port, our_pk, our_sk).into_boxed();
         Ok(Self { server, send_reqs })
     }
 }
@@ -53,7 +55,6 @@ impl Stream for DiscoverPeers {
     /// Send peer discovery messages while also driving the discovery server.
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
         self.server.poll()?;
-        // TODO(povilas): filter out self responses
         self.send_reqs.poll()
     }
 }
@@ -71,7 +72,6 @@ pub enum DiscoveryError {
 enum DiscoveryMsg {
     /// Request has sender's public key which should be used to encrypt response.
     Request(PublicEncryptKey),
-    // TODO(povilas): include their public key
     /// Addresses that the peer is accessible with.
     Response(Vec<PeerInfo>),
 }
@@ -101,7 +101,7 @@ impl DiscoveryServer {
     pub fn new(
         port: u16,
         our_addrs: Vec<SocketAddr>,
-        our_pk: PublicEncryptKey,
+        our_pk: &PublicEncryptKey,
     ) -> Result<Self, DiscoveryError> {
         let listener = UdpSocket::bind(&SocketAddr::V4(SocketAddrV4::new(ipv4!("0.0.0.0"), port)))
             .map_err(DiscoveryError::Io)?;
@@ -109,7 +109,7 @@ impl DiscoveryServer {
         Ok(Self {
             listener,
             our_addrs,
-            our_pk,
+            our_pk: *our_pk,
             port,
             clients: Vec::new(),
         })
@@ -182,9 +182,13 @@ impl Future for DiscoveryServer {
 }
 
 /// Broadcast peer discovery request and wait for response.
-pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError> {
+pub fn shout_for_peers(
+    port: u16,
+    our_pk: &PublicEncryptKey,
+    our_sk: &SecretEncryptKey,
+) -> impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError> {
     let broadcast_to = try_bstream!(broadcast_addrs(port).map_err(DiscoveryError::Io));
-    let (our_pk, our_sk) = gen_encrypt_keypair();
+    let (our_pk, our_sk) = (*our_pk, our_sk.clone());
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
 
     stream::iter_ok(broadcast_to)
@@ -200,8 +204,8 @@ pub fn shout_for_peers(port: u16) -> impl Stream<Item = Vec<PeerInfo>, Error = D
                 Ok(DiscoveryMsg::Response(their_addrs)) => Ok(their_addrs),
                 _ => Err(DiscoveryError::InvalidResponse),
             }
-        }).and_then(|their_addrs| Ok(their_addrs))
-        .into_boxed()
+        }).into_boxed()
+    // TODO(povilas): filter out self responses
 }
 
 // TODO(povilas): netsim test for this
@@ -238,7 +242,7 @@ mod tests {
         let server = unwrap!(DiscoveryServer::new(
             0,
             vec![addr!("192.168.1.100:1234")],
-            server_pk
+            &server_pk
         ));
         let server_addr = SocketAddr::V4(SocketAddrV4::new(ipv4!("127.0.0.1"), server.port()));
         let sock = unwrap!(UdpSocket::bind(&addr!("0.0.0.0:0")));
@@ -271,15 +275,16 @@ mod tests {
     fn shout_for_peers_broadcasts_requests_on_lan_and_collects_peer_addresses() {
         let mut evloop = unwrap!(Runtime::new());
 
-        let (server_pk, _sk) = gen_encrypt_keypair();
+        let (server_pk, _server_sk) = gen_encrypt_keypair();
         let server = unwrap!(DiscoveryServer::new(
             0,
             vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
-            server_pk,
+            &server_pk,
         ));
         let server_port = server.port();
 
-        let task = shout_for_peers(server_port)
+        let (our_pk, our_sk) = gen_encrypt_keypair();
+        let task = shout_for_peers(server_port, &our_pk, &our_sk)
             .collect()
             .with_timeout(Duration::from_secs(10))
             .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))

@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
     info!("Our advertised addresses: {:?}", addrs);
 
     let (our_pk, _our_sk) = gen_encrypt_keypair();
-    let server = unwrap!(DiscoveryServer::new(6000, addrs, our_pk));
+    let server = unwrap!(DiscoveryServer::new(6000, addrs, &our_pk));
     let run_server = server
         .map(|_| ())
         .map_err(|e| error!("Peer discovery server failure: {:?}", e));

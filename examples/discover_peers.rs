@@ -31,8 +31,8 @@ fn main() -> io::Result<()> {
 
     info!("Looking for peers on LAN on port 6000");
     let addrs = our_addrs(1234)?;
-    let (our_pk, _our_sk) = gen_encrypt_keypair();
-    let find_peers = unwrap!(discover_peers(6000, addrs, our_pk))
+    let (our_pk, our_sk) = gen_encrypt_keypair();
+    let find_peers = unwrap!(discover_peers(6000, addrs, &our_pk, &our_sk))
         .map_err(|e| error!("Peer discovery failed: {:?}", e))
         .for_each(|addrs| {
             println!("Peer is listening on: {:?}", addrs);
