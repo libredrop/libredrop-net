@@ -197,7 +197,6 @@ pub fn shout_for_peers(
     let our_pk2 = our_pk;
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
 
-
     stream::iter_ok(broadcast_to)
         .and_then(move |addr| {
             let sock = broadcast_sock().map_err(DiscoveryError::Io)?;
@@ -332,12 +331,11 @@ mod tests {
 
             let task = shout_for_peers(server_port, &server_pk, &server_sk)
                 .collect()
-                .with_timeout(Duration::from_secs(10))
-                .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
+                .with_timeout(Duration::from_secs(3))
                 .while_driving(server);
 
             match evloop.block_on(task) {
-                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs, empty()),
+                Ok((their_addrs_opt, _server_task)) => assert_that!(their_addrs_opt, none()),
                 _ => panic!("Peer discovery failed"),
             }
         }
