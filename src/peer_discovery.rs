@@ -197,6 +197,7 @@ pub fn shout_for_peers(
     let our_pk2 = our_pk;
     let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
 
+
     stream::iter_ok(broadcast_to)
         .and_then(move |addr| {
             let sock = broadcast_sock().map_err(DiscoveryError::Io)?;
@@ -204,6 +205,7 @@ pub fn shout_for_peers(
         }).and_then(move |(sock, addr)| {
             sock.send_dgram(request.clone(), &addr)
                 .map_err(DiscoveryError::Io)
+            // TODO(povilas): keep receiving for infinite responses rather than len(broadcast_to)
         }).and_then(|(sock, _buf)| sock.recv_dgram(vec![0; 65000]).map_err(DiscoveryError::Io))
         .and_then(move |(_sock, buf, bytes_read, _sender_addr)| {
             match our_sk.anonymously_decrypt(&buf[..bytes_read], &our_pk) {
@@ -300,21 +302,18 @@ mod tests {
 
             let (our_pk, our_sk) = gen_encrypt_keypair();
             let task = shout_for_peers(server_port, &our_pk, &our_sk)
+                .take(1)
                 .collect()
                 .with_timeout(Duration::from_secs(10))
                 .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
                 .while_driving(server);
 
+            let exp_addrs = vec![
+                PeerInfo::new(addr!("192.168.1.100:1234"), server_pk),
+                PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
+            ];
             match evloop.block_on(task) {
-                Ok((their_addrs, _server_task)) => {
-                    assert_that!(
-                        their_addrs,
-                        eq(vec![vec![
-                            PeerInfo::new(addr!("192.168.1.100:1234"), server_pk),
-                            PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
-                        ]])
-                    );
-                }
+                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs[0], eq(&exp_addrs)),
                 _ => panic!("Peer discovery failed"),
             }
         }
