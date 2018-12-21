@@ -3,7 +3,7 @@
 //!
 //! Run:
 //! ```
-//! $ RUST_LOG=info cargo run --example peer_discovery
+//! $ RUST_LOG=info cargo run --example discover_peers
 //! ```
 
 extern crate env_logger;
