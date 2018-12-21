@@ -31,3 +31,4 @@ mod peer_discovery;
 mod priv_prelude;
 
 pub use peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
+pub use peer::PeerInfo;
