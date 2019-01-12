@@ -1,4 +1,4 @@
-use priv_prelude::*;
+use crate::priv_prelude::*;
 
 /// Information necessary to connect to peer.
 #[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]

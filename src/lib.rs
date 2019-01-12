@@ -29,5 +29,5 @@ mod peer;
 mod peer_discovery;
 mod priv_prelude;
 
-pub use peer::PeerInfo;
-pub use peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
+pub use crate::peer::PeerInfo;
+pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
