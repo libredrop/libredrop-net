@@ -253,7 +253,10 @@ impl ShoutForPeers {
                 Ok(Async::NotReady) => resend.push(addr),
                 Err(e) => {
                     // TODO(povilas): add to self.errors
-                    info!("Failed to send service discovery request to {}: {}", addr, e);
+                    info!(
+                        "Failed to send service discovery request to {}: {}",
+                        addr, e
+                    );
                 }
             }
         }
@@ -265,7 +268,7 @@ impl ShoutForPeers {
     fn recv_responses(&mut self) {
         let mut buf = [0u8; 65000];
         let mut sockets = unwrap!(self.sockets.take());
-        for (_, ref mut socket) in sockets.iter_mut() {
+        for ref mut socket in &mut sockets.values_mut() {
             match socket.poll_recv_from(&mut buf) {
                 Ok(Async::NotReady) => (),
                 Ok(Async::Ready((bytes_received, _from_addr))) => {
@@ -280,7 +283,7 @@ impl ShoutForPeers {
         self.sockets = Some(sockets);
     }
 
-    fn handle_response(&mut self,buf: &[u8]) {
+    fn handle_response(&mut self, buf: &[u8]) {
         let peers = match self.our_sk.anonymously_decrypt(buf, &self.our_pk) {
             Ok(DiscoveryMsg::Response(peers)) => peers,
             Ok(msg) => {
