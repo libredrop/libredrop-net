@@ -27,7 +27,7 @@ fn main() {
 
     info!("Looking for peers on LAN on port 6000");
     let (our_pk, our_sk) = gen_encrypt_keypair();
-    let find_peers = shout_for_peers(6000, &our_pk, &our_sk)
+    let find_peers = shout_for_peers(6000, our_pk, our_sk)
         .map_err(|e| error!("Peer discovery failed: {:?}", e))
         .for_each(|addrs| {
             println!("Peer is listening on: {:?}", addrs);

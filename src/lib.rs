@@ -13,7 +13,6 @@ extern crate tokio;
 extern crate serde_derive;
 extern crate bytes;
 extern crate serde;
-#[cfg(test)]
 #[macro_use]
 extern crate unwrap;
 #[macro_use]
@@ -30,5 +29,5 @@ mod peer;
 mod peer_discovery;
 mod priv_prelude;
 
-pub use peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
 pub use peer::PeerInfo;
+pub use peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
