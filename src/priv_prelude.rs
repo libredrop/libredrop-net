@@ -1,6 +1,6 @@
 //! Common includes.
 
-pub use future_utils::{BoxStream, FutureExt, StreamExt};
+pub use future_utils::{BoxStream, BoxFuture, FutureExt, StreamExt};
 pub use futures::{Async, Future, Stream, Poll};
 pub use peer::PeerInfo;
 pub use safe_crypto::{

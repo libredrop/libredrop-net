@@ -5,6 +5,11 @@ use priv_prelude::*;
 use std::io;
 use std::net::SocketAddrV4;
 use tokio::net::UdpSocket;
+use tokio::prelude::future::empty;
+use tokio::timer::timeout::{Error as TimeoutError, Timeout};
+
+/// Broadcast peer discovery requests every N seconds.
+const BROADCAST_DISCOVERY_INTERVAL: u64 = 3;
 
 /// Tries given expression. Returns boxed stream error on failure.
 macro_rules! try_bstream {
@@ -188,7 +193,7 @@ impl Future for DiscoveryServer {
 }
 
 /// Sends peer discovery requests to all network interfaces and indefinitely waits for responses
-/// until the stream is cancelled.
+/// until the stream is cancelled. Resends request every 3 seconds.
 pub fn shout_for_peers(
     port: u16,
     our_pk: PublicEncryptKey,
@@ -208,76 +213,71 @@ struct ShoutForPeers {
     our_sk: SecretEncryptKey,
     /// Serialized `DiscoveryMsg`.
     request: Vec<u8>,
-    /// Sockets used to send discovery requests to.
-    sockets_to_send: Vec<(SocketAddr, UdpSocket)>,
-    /// On these sockets we are waiting for responses.
-    sockets_to_recv: Vec<UdpSocket>,
+    /// It's optional only to trick borrow checker.
+    sockets: Option<HashMap<SocketAddr, UdpSocket>>,
+    /// List of socket addresses to send requests to.
+    to_send: Vec<SocketAddr>,
     /// Stream results.
     results: Vec<Vec<PeerInfo>>,
-}
-
-/// Creates sockets for each broadcast address.
-fn broadcast_sockets(port: u16) -> io::Result<Vec<(SocketAddr, UdpSocket)>> {
-    let mut sockets = Vec::new();
-    for addr in broadcast_addrs(port)? {
-        let sock = broadcast_sock()?;
-        let _ = sockets.push((addr, sock));
-    }
-    Ok(sockets)
+    timeout: BoxFuture<(), ()>,
 }
 
 impl ShoutForPeers {
     fn try_new(port: u16, our_pk: PublicEncryptKey, our_sk: SecretEncryptKey) -> io::Result<Self> {
-        let sockets_to_send = broadcast_sockets(port)?;
+        let sockets = broadcast_sockets(port)?;
         // NOTE(povilas): I doubt serialize can fail, will double check though
         let request = unwrap!(DiscoveryMsg::serialized_request(our_pk));
+        let timeout = new_timeout(BROADCAST_DISCOVERY_INTERVAL);
+        let to_send = sockets.keys().cloned().collect();
+
         Ok(Self {
             our_pk,
             our_sk,
             request,
-            sockets_to_send,
-            sockets_to_recv: Default::default(),
+            sockets: Some(sockets),
+            to_send,
             results: Default::default(),
+            timeout,
         })
     }
 
     /// Sends service discovery requests through all network interfaces.
     fn send_requests(&mut self) {
-        while let Some((addr, mut socket)) = self.sockets_to_send.pop() {
+        let mut sockets = unwrap!(self.sockets.take());
+        let mut resend = Vec::new();
+
+        while let Some(addr) = self.to_send.pop() {
+            let mut socket = unwrap!(sockets.get_mut(&addr));
             match socket.poll_send_to(&self.request[..], &addr) {
-                Ok(Async::Ready(_)) => {
-                    self.sockets_to_recv.push(socket);
-                }
-                Ok(Async::NotReady) => {
-                    self.sockets_to_send.push((addr, socket));
-                    break;
-                }
+                Ok(Async::Ready(_)) => (),
+                Ok(Async::NotReady) => resend.push(addr),
                 Err(e) => {
                     // TODO(povilas): add to self.errors
                     info!("Failed to send service discovery request to {}: {}", addr, e);
                 }
             }
         }
+
+        self.to_send.extend(&resend);
+        self.sockets = Some(sockets);
     }
 
     fn recv_responses(&mut self) {
         let mut buf = [0u8; 65000];
-        let mut sockets_not_ready = Vec::new();
-        while let Some(mut socket) = self.sockets_to_recv.pop() {
+        let mut sockets = unwrap!(self.sockets.take());
+        for (_, ref mut socket) in sockets.iter_mut() {
             match socket.poll_recv_from(&mut buf) {
-                Ok(Async::NotReady) => {
-                    sockets_not_ready.push(socket);
-                }
+                Ok(Async::NotReady) => (),
                 Ok(Async::Ready((bytes_received, _from_addr))) => {
                     self.handle_response(&buf[..bytes_received]);
                 }
                 Err(e) => {
-                    // TODO(povilas): add to self.errors
+                    // TODO(povilas): remove from sockets list and add to self.errors
                     info!("Failed to receive service discovery response: {}", e);
                 }
             }
         }
-        self.sockets_to_recv.append(&mut sockets_not_ready);
+        self.sockets = Some(sockets);
     }
 
     fn handle_response(&mut self,buf: &[u8]) {
@@ -299,6 +299,16 @@ impl ShoutForPeers {
             .collect();
         self.results.push(peers);
     }
+
+    /// See if it's time to resend discovery requests.
+    fn check_resend_timeout(&mut self) {
+        if let Ok(Async::Ready(_)) = self.timeout.poll() {
+            self.timeout = new_timeout(BROADCAST_DISCOVERY_INTERVAL);
+            if let Some(ref mut sockets) = self.sockets {
+                self.to_send = sockets.keys().cloned().collect();
+            }
+        }
+    }
 }
 
 impl Stream for ShoutForPeers {
@@ -306,18 +316,31 @@ impl Stream for ShoutForPeers {
     type Error = DiscoveryError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.check_resend_timeout();
         self.send_requests();
         self.recv_responses();
 
         // TODO(povilas): if self.sockets_to_send.is_empty() && self.sockets_to_recv.is_empty() &&
         // self.results.is_empty() return DiscoveryError::AllAttemptsFailed(self.errors)
 
+        // TODO(povilas): return all collected peers at once?
+        // Otherwise poll() might not be scheduled anymore depending on how it is notified..
         if let Some(peers) = self.results.pop() {
             Ok(Async::Ready(Some(peers)))
         } else {
             Ok(Async::NotReady)
         }
     }
+}
+
+/// Creates sockets for each broadcast address.
+fn broadcast_sockets(port: u16) -> io::Result<HashMap<SocketAddr, UdpSocket>> {
+    let mut sockets = HashMap::new();
+    for addr in broadcast_addrs(port)? {
+        let sock = broadcast_sock()?;
+        let _ = sockets.insert(addr, sock);
+    }
+    Ok(sockets)
 }
 
 // TODO(povilas): netsim test for this
@@ -338,6 +361,12 @@ fn broadcast_sock() -> io::Result<UdpSocket> {
     let sock = UdpSocket::bind(&addr!("0.0.0.0:0"))?;
     sock.set_broadcast(true)?;
     Ok(sock)
+}
+
+fn new_timeout(secs: u64) -> BoxFuture<(), ()> {
+    Timeout::new(empty(), Duration::from_secs(secs))
+        .then(|_res: Result<(), TimeoutError<()>>| Ok(()))
+        .into_boxed()
 }
 
 #[cfg(test)]
@@ -436,6 +465,36 @@ mod tests {
             match evloop.block_on(task) {
                 Ok((their_addrs_opt, _server_task)) => assert_that!(their_addrs_opt, none()),
                 Err(e) => panic!("Peer discovery failed: {:?}", e.0),
+            }
+        }
+
+        #[test]
+        fn it_broadcasts_requests_every_n_seconds() {
+            let mut evloop = unwrap!(Runtime::new());
+
+            let (server_pk, _server_sk) = gen_encrypt_keypair();
+            let server = unwrap!(DiscoveryServer::new(
+                0,
+                vec![addr!("192.168.1.100:1234")],
+                &server_pk,
+            ));
+            let server_port = server.port();
+
+            let (our_pk, our_sk) = gen_encrypt_keypair();
+            let task = shout_for_peers(server_port, our_pk, our_sk)
+                .take(2)
+                .collect()
+                .with_timeout(Duration::from_secs(BROADCAST_DISCOVERY_INTERVAL * 2 + 2))
+                .map(|addrs_opt| unwrap!(addrs_opt, "Peer discovery timed out"))
+                .while_driving(server);
+
+            let exp_addrs = vec![
+                vec![PeerInfo::new(addr!("192.168.1.100:1234"), server_pk)],
+                vec![PeerInfo::new(addr!("192.168.1.100:1234"), server_pk)],
+            ];
+            match evloop.block_on(task) {
+                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs, eq(&exp_addrs)),
+                _ => panic!("Peer discovery failed"),
             }
         }
     }
