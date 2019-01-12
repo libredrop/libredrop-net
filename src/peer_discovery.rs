@@ -1,5 +1,5 @@
 use bincode;
-use futures::stream;
+use futures::stream::{self, Stream};
 use get_if_addrs::{get_if_addrs, IfAddr};
 use priv_prelude::*;
 use std::io;
@@ -43,7 +43,7 @@ impl DiscoverPeers {
         our_sk: &SecretEncryptKey,
     ) -> Result<Self, DiscoveryError> {
         let server = DiscoveryServer::new(port, our_addrs, our_pk)?;
-        let send_reqs = shout_for_peers(port, our_pk, our_sk).into_boxed();
+        let send_reqs = shout_for_peers(port, *our_pk, our_sk.clone()).into_boxed();
         Ok(Self { server, send_reqs })
     }
 }
@@ -80,6 +80,7 @@ impl DiscoveryMsg {
     /// Returns serialized but not encrypted peer discovery request.
     fn serialized_request(pk: PublicEncryptKey) -> Result<Vec<u8>, DiscoveryError> {
         let msg = DiscoveryMsg::Request(pk);
+        // TODO(povilas): check if serialize can actually fail
         bincode::serialize(&msg).map_err(DiscoveryError::SerializeFailure)
     }
 }
@@ -135,8 +136,8 @@ impl DiscoveryServer {
     fn on_packet_recv(&mut self, buf: &[u8], sender_addr: SocketAddr) {
         match bincode::deserialize(buf) {
             Ok(DiscoveryMsg::Request(their_pk)) => {
+                // don't respond to ourselves
                 if their_pk != self.our_pk {
-                    // don't respond to ourselves
                     self.clients.push((sender_addr, their_pk))
                 }
             }
@@ -186,39 +187,137 @@ impl Future for DiscoveryServer {
     }
 }
 
-/// Broadcast peer discovery request and wait for response.
+/// Sends peer discovery requests to all network interfaces and indefinitely waits for responses
+/// until the stream is cancelled.
 pub fn shout_for_peers(
     port: u16,
-    our_pk: &PublicEncryptKey,
-    our_sk: &SecretEncryptKey,
-) -> impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError> {
-    let broadcast_to = try_bstream!(broadcast_addrs(port).map_err(DiscoveryError::Io));
-    let (our_pk, our_sk) = (*our_pk, our_sk.clone());
-    let our_pk2 = our_pk;
-    let request = try_bstream!(DiscoveryMsg::serialized_request(our_pk));
+    our_pk: PublicEncryptKey,
+    our_sk: SecretEncryptKey,
+) -> BoxStream<Vec<PeerInfo>, DiscoveryError> {
+    try_bstream!(
+        ShoutForPeers::try_new(port, our_pk, our_sk)
+            .map_err(DiscoveryError::Io)
+            .map(|stream| stream.into_boxed())
+    )
+}
 
-    stream::iter_ok(broadcast_to)
-        .and_then(move |addr| {
-            let sock = broadcast_sock().map_err(DiscoveryError::Io)?;
-            Ok((sock, addr))
-        }).and_then(move |(sock, addr)| {
-            sock.send_dgram(request.clone(), &addr)
-                .map_err(DiscoveryError::Io)
-            // TODO(povilas): keep receiving for infinite responses rather than len(broadcast_to)
-        }).and_then(|(sock, _buf)| sock.recv_dgram(vec![0; 65000]).map_err(DiscoveryError::Io))
-        .and_then(move |(_sock, buf, bytes_read, _sender_addr)| {
-            match our_sk.anonymously_decrypt(&buf[..bytes_read], &our_pk) {
-                Ok(DiscoveryMsg::Response(their_addrs)) => Ok(their_addrs),
-                _ => Err(DiscoveryError::InvalidResponse),
+/// A stream that sends peer discovery messages to all network interfaces and indefinitely until it
+/// is cancelled. This stream yields all peers on LAN that respond to this beacon.
+struct ShoutForPeers {
+    our_pk: PublicEncryptKey,
+    our_sk: SecretEncryptKey,
+    /// Serialized `DiscoveryMsg`.
+    request: Vec<u8>,
+    /// Sockets used to send discovery requests to.
+    sockets_to_send: Vec<(SocketAddr, UdpSocket)>,
+    /// On these sockets we are waiting for responses.
+    sockets_to_recv: Vec<UdpSocket>,
+    /// Stream results.
+    results: Vec<Vec<PeerInfo>>,
+}
+
+/// Creates sockets for each broadcast address.
+fn broadcast_sockets(port: u16) -> io::Result<Vec<(SocketAddr, UdpSocket)>> {
+    let mut sockets = Vec::new();
+    for addr in broadcast_addrs(port)? {
+        let sock = broadcast_sock()?;
+        let _ = sockets.push((addr, sock));
+    }
+    Ok(sockets)
+}
+
+impl ShoutForPeers {
+    fn try_new(port: u16, our_pk: PublicEncryptKey, our_sk: SecretEncryptKey) -> io::Result<Self> {
+        let sockets_to_send = broadcast_sockets(port)?;
+        // NOTE(povilas): I doubt serialize can fail, will double check though
+        let request = unwrap!(DiscoveryMsg::serialized_request(our_pk));
+        Ok(Self {
+            our_pk,
+            our_sk,
+            request,
+            sockets_to_send,
+            sockets_to_recv: Default::default(),
+            results: Default::default(),
+        })
+    }
+
+    /// Sends service discovery requests through all network interfaces.
+    fn send_requests(&mut self) {
+        while let Some((addr, mut socket)) = self.sockets_to_send.pop() {
+            match socket.poll_send_to(&self.request[..], &addr) {
+                Ok(Async::Ready(_)) => {
+                    self.sockets_to_recv.push(socket);
+                }
+                Ok(Async::NotReady) => {
+                    self.sockets_to_send.push((addr, socket));
+                    break;
+                }
+                Err(e) => {
+                    // TODO(povilas): add to self.errors
+                    info!("Failed to send service discovery request to {}: {}", addr, e);
+                }
             }
-        }).map(move |peers| {
-            peers
-                .iter()
-                .filter(|peer| peer.pub_key != our_pk2)
-                .cloned()
-                .collect()
-        }).filter(|peers: &Vec<PeerInfo>| !peers.is_empty())
-        .into_boxed()
+        }
+    }
+
+    fn recv_responses(&mut self) {
+        let mut buf = [0u8; 65000];
+        let mut sockets_not_ready = Vec::new();
+        while let Some(mut socket) = self.sockets_to_recv.pop() {
+            match socket.poll_recv_from(&mut buf) {
+                Ok(Async::NotReady) => {
+                    sockets_not_ready.push(socket);
+                }
+                Ok(Async::Ready((bytes_received, _from_addr))) => {
+                    self.handle_response(&buf[..bytes_received]);
+                }
+                Err(e) => {
+                    // TODO(povilas): add to self.errors
+                    info!("Failed to receive service discovery response: {}", e);
+                }
+            }
+        }
+        self.sockets_to_recv.append(&mut sockets_not_ready);
+    }
+
+    fn handle_response(&mut self,buf: &[u8]) {
+        let peers = match self.our_sk.anonymously_decrypt(buf, &self.our_pk) {
+            Ok(DiscoveryMsg::Response(peers)) => peers,
+            Ok(msg) => {
+                info!("Unexpected message received: {:?}", msg);
+                return;
+            }
+            Err(e) => {
+                info!("Failed to decrypt service discovery response: {}", e);
+                return;
+            }
+        };
+        let peers: Vec<PeerInfo> = peers
+            .iter()
+            .filter(|peer| peer.pub_key != self.our_pk)
+            .cloned()
+            .collect();
+        self.results.push(peers);
+    }
+}
+
+impl Stream for ShoutForPeers {
+    type Item = Vec<PeerInfo>;
+    type Error = DiscoveryError;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.send_requests();
+        self.recv_responses();
+
+        // TODO(povilas): if self.sockets_to_send.is_empty() && self.sockets_to_recv.is_empty() &&
+        // self.results.is_empty() return DiscoveryError::AllAttemptsFailed(self.errors)
+
+        if let Some(peers) = self.results.pop() {
+            Ok(Async::Ready(Some(peers)))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
 }
 
 // TODO(povilas): netsim test for this
@@ -300,7 +399,7 @@ mod tests {
             let server_port = server.port();
 
             let (our_pk, our_sk) = gen_encrypt_keypair();
-            let task = shout_for_peers(server_port, &our_pk, &our_sk)
+            let task = shout_for_peers(server_port, our_pk, our_sk)
                 .take(1)
                 .collect()
                 .with_timeout(Duration::from_secs(10))
@@ -329,14 +428,14 @@ mod tests {
             ));
             let server_port = server.port();
 
-            let task = shout_for_peers(server_port, &server_pk, &server_sk)
+            let task = shout_for_peers(server_port, server_pk, server_sk)
                 .collect()
                 .with_timeout(Duration::from_secs(3))
                 .while_driving(server);
 
             match evloop.block_on(task) {
                 Ok((their_addrs_opt, _server_task)) => assert_that!(their_addrs_opt, none()),
-                _ => panic!("Peer discovery failed"),
+                Err(e) => panic!("Peer discovery failed: {:?}", e.0),
             }
         }
     }

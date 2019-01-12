@@ -13,7 +13,6 @@ extern crate tokio;
 extern crate serde_derive;
 extern crate bytes;
 extern crate serde;
-#[cfg(test)]
 #[macro_use]
 extern crate unwrap;
 #[macro_use]
