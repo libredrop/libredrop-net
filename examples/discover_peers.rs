@@ -50,7 +50,8 @@ fn our_addrs(with_port: u16) -> io::Result<Vec<SocketAddr>> {
         .filter_map(|interface| match interface.addr {
             IfAddr::V4(ref ifv4_addr) => Some(ifv4_addr.ip),
             IfAddr::V6(_) => None,
-        }).filter(|ip| !ip.is_loopback())
+        })
+        .filter(|ip| !ip.is_loopback())
         .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, with_port)))
         .collect();
     Ok(addrs)

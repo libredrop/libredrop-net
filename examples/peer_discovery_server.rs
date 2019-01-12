@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
     info!("Our advertised addresses: {:?}", addrs);
 
     let (our_pk, _our_sk) = gen_encrypt_keypair();
-    let server = unwrap!(DiscoveryServer::new(6000, addrs, &our_pk));
+    let server = unwrap!(DiscoveryServer::try_new(6000, addrs, &our_pk));
     let run_server = server
         .map(|_| ())
         .map_err(|e| error!("Peer discovery server failure: {:?}", e));
@@ -49,7 +49,8 @@ fn our_addrs(with_port: u16) -> io::Result<Vec<SocketAddr>> {
         .filter_map(|interface| match interface.addr {
             IfAddr::V4(ref ifv4_addr) => Some(ifv4_addr.ip),
             IfAddr::V6(_) => None,
-        }).filter(|ip| !ip.is_loopback())
+        })
+        .filter(|ip| !ip.is_loopback())
         .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, with_port)))
         .collect();
     Ok(addrs)

@@ -1,7 +1,7 @@
+use crate::priv_prelude::*;
 use bincode;
 use futures::stream::{self, Stream};
 use get_if_addrs::{get_if_addrs, IfAddr};
-use priv_prelude::*;
 use std::io;
 use std::net::SocketAddrV4;
 use tokio::net::UdpSocket;
@@ -30,7 +30,7 @@ pub fn discover_peers(
     our_pk: &PublicEncryptKey,
     our_sk: &SecretEncryptKey,
 ) -> Result<impl Stream<Item = Vec<PeerInfo>, Error = DiscoveryError>, DiscoveryError> {
-    DiscoverPeers::new(port, our_addrs, our_pk, our_sk)
+    DiscoverPeers::try_new(port, our_addrs, our_pk, our_sk)
 }
 
 struct DiscoverPeers {
@@ -41,13 +41,13 @@ struct DiscoverPeers {
 }
 
 impl DiscoverPeers {
-    fn new(
+    fn try_new(
         port: u16,
         our_addrs: Vec<SocketAddr>,
         our_pk: &PublicEncryptKey,
         our_sk: &SecretEncryptKey,
     ) -> Result<Self, DiscoveryError> {
-        let server = DiscoveryServer::new(port, our_addrs, our_pk)?;
+        let server = DiscoveryServer::try_new(port, our_addrs, our_pk)?;
         let send_reqs = shout_for_peers(port, *our_pk, our_sk.clone()).into_boxed();
         Ok(Self { server, send_reqs })
     }
@@ -104,7 +104,7 @@ pub struct DiscoveryServer {
 
 impl DiscoveryServer {
     /// Constructs new peer discovery server that listens for requests on a given port.
-    pub fn new(
+    pub fn try_new(
         port: u16,
         our_addrs: Vec<SocketAddr>,
         our_pk: &PublicEncryptKey,
@@ -199,11 +199,9 @@ pub fn shout_for_peers(
     our_pk: PublicEncryptKey,
     our_sk: SecretEncryptKey,
 ) -> BoxStream<Vec<PeerInfo>, DiscoveryError> {
-    try_bstream!(
-        ShoutForPeers::try_new(port, our_pk, our_sk)
-            .map_err(DiscoveryError::Io)
-            .map(|stream| stream.into_boxed())
-    )
+    try_bstream!(ShoutForPeers::try_new(port, our_pk, our_sk)
+        .map_err(DiscoveryError::Io)
+        .map(|stream| stream.into_boxed()))
 }
 
 /// A stream that sends peer discovery messages to all network interfaces and indefinitely until it
@@ -247,7 +245,7 @@ impl ShoutForPeers {
         let mut resend = Vec::new();
 
         while let Some(addr) = self.to_send.pop() {
-            let mut socket = unwrap!(sockets.get_mut(&addr));
+            let socket = unwrap!(sockets.get_mut(&addr));
             match socket.poll_send_to(&self.request[..], &addr) {
                 Ok(Async::Ready(_)) => (),
                 Ok(Async::NotReady) => resend.push(addr),
@@ -268,7 +266,7 @@ impl ShoutForPeers {
     fn recv_responses(&mut self) {
         let mut buf = [0u8; 65000];
         let mut sockets = unwrap!(self.sockets.take());
-        for ref mut socket in &mut sockets.values_mut() {
+        for socket in sockets.values_mut() {
             match socket.poll_recv_from(&mut buf) {
                 Ok(Async::NotReady) => (),
                 Ok(Async::Ready((bytes_received, _from_addr))) => {
@@ -355,7 +353,8 @@ fn broadcast_addrs(port: u16) -> io::Result<Vec<SocketAddr>> {
         .filter_map(|iface| match iface.addr {
             IfAddr::V4(ref ifv4_addr) => ifv4_addr.broadcast,
             IfAddr::V6(_) => None,
-        }).map(move |ip| SocketAddr::V4(SocketAddrV4::new(ip, port)))
+        })
+        .map(move |ip| SocketAddr::V4(SocketAddrV4::new(ip, port)))
         .collect())
 }
 
@@ -383,7 +382,7 @@ mod tests {
         let mut evloop = unwrap!(Runtime::new());
 
         let (server_pk, _sk) = gen_encrypt_keypair();
-        let server = unwrap!(DiscoveryServer::new(
+        let server = unwrap!(DiscoveryServer::try_new(
             0,
             vec![addr!("192.168.1.100:1234")],
             &server_pk
@@ -402,7 +401,8 @@ mod tests {
             .map(|buf_opt| {
                 let buf = unwrap!(buf_opt);
                 unwrap!(our_sk.anonymously_decrypt(&buf, &our_pk))
-            }).while_driving(server);
+            })
+            .while_driving(server);
 
         match evloop.block_on(send_req) {
             Ok((DiscoveryMsg::Response(addrs), _server_task)) => {
@@ -423,7 +423,7 @@ mod tests {
             let mut evloop = unwrap!(Runtime::new());
 
             let (server_pk, _server_sk) = gen_encrypt_keypair();
-            let server = unwrap!(DiscoveryServer::new(
+            let server = unwrap!(DiscoveryServer::try_new(
                 0,
                 vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
                 &server_pk,
@@ -453,7 +453,7 @@ mod tests {
             let mut evloop = unwrap!(Runtime::new());
 
             let (server_pk, server_sk) = gen_encrypt_keypair();
-            let server = unwrap!(DiscoveryServer::new(
+            let server = unwrap!(DiscoveryServer::try_new(
                 0,
                 vec![addr!("192.168.1.100:1234"), addr!("127.0.0.1:1234")],
                 &server_pk,
@@ -476,7 +476,7 @@ mod tests {
             let mut evloop = unwrap!(Runtime::new());
 
             let (server_pk, _server_sk) = gen_encrypt_keypair();
-            let server = unwrap!(DiscoveryServer::new(
+            let server = unwrap!(DiscoveryServer::try_new(
                 0,
                 vec![addr!("192.168.1.100:1234")],
                 &server_pk,
