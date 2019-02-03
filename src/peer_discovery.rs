@@ -2,7 +2,6 @@ use crate::priv_prelude::*;
 use bincode;
 use futures::stream::{self, Stream};
 use get_if_addrs::{get_if_addrs, IfAddr};
-use std::io;
 use std::net::SocketAddrV4;
 use tokio::net::UdpSocket;
 use tokio::prelude::future::empty;
@@ -66,11 +65,23 @@ impl Stream for DiscoverPeers {
 
 // TODO(povilas): use failure crate for errors
 /// Peers discovery error.
-#[derive(Debug)]
-pub enum DiscoveryError {
-    Io(io::Error),
-    SerializeFailure(bincode::Error),
-    InvalidResponse,
+quick_error! {
+    #[derive(Debug)]
+    pub enum DiscoveryError {
+        Io(e: io::Error) {
+            display("I/O error: {}", e)
+            cause(e)
+            from()
+        }
+        SerializeFailure(e: bincode::Error) {
+            display("Serialization error: {}", e)
+            cause(e)
+            from()
+        }
+        InvalidResponse {
+            display("Ivalid response")
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

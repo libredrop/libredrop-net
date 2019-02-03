@@ -28,6 +28,23 @@ extern crate hamcrest2;
 mod peer;
 mod peer_discovery;
 mod priv_prelude;
+#[macro_use]
+mod utils;
+mod listener;
 
 pub use crate::peer::PeerInfo;
 pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
+
+use quick_error::quick_error;
+
+// TODO(povilas): use failure crate
+quick_error! {
+    #[derive(Debug)]
+    pub enum Error {
+        Discovery(e: DiscoveryError) {
+            display("Peer discovery on LAN failed: {}", e)
+            cause(e)
+            from()
+        }
+    }
+}
