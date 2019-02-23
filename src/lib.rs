@@ -33,7 +33,9 @@ mod priv_prelude;
 #[macro_use]
 mod utils;
 
-pub use crate::peer::PeerInfo;
+pub use crate::listener::ConnectionListener;
+pub use crate::message::Message;
+pub use crate::peer::{connect_with, ConnectError, Connection, ConnectionError, PeerInfo};
 pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
 
 use maidsafe_utilities::serialisation::SerialisationError;

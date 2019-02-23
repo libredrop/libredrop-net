@@ -41,6 +41,11 @@ impl ConnectionListener {
     pub fn port(&self) -> u16 {
         self.local_addr.port()
     }
+
+    /// Returns local listening address.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
 }
 
 /// Accepts incoming TCP connections and executes handshake before returning established connection.
