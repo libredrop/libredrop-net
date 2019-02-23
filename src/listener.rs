@@ -1,12 +1,15 @@
 ///! Connection listener.
 use bytes::Bytes;
 use futures::{future, Sink};
+use get_if_addrs::{get_if_addrs, IfAddr};
+use std::net::SocketAddrV4;
 use tokio::codec::{Framed, LengthDelimitedCodec};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::message::HandshakeMessage;
 use crate::peer::{ConnectError, Connection};
 use crate::priv_prelude::*;
+use crate::utils::ipv4_addr;
 
 /// Listens for incoming connections.
 pub struct ConnectionListener {
@@ -15,13 +18,9 @@ pub struct ConnectionListener {
 }
 
 impl ConnectionListener {
-    /// Bind to a given address and start listening for incominng connections.
-    pub fn bind(
-        addr: &SocketAddr,
-        our_sk: SecretEncryptKey,
-        our_pk: PublicEncryptKey,
-    ) -> io::Result<Self> {
-        let listener = TcpListener::bind(addr)?;
+    /// Bind to a given port on all network interfaces and start listening for incoming connections.
+    pub fn bind(port: u16, our_sk: SecretEncryptKey, our_pk: PublicEncryptKey) -> io::Result<Self> {
+        let listener = TcpListener::bind(&ipv4_addr(0, 0, 0, 0, port))?;
         let local_addr = listener.local_addr()?;
         let accept_conns = listener
             .incoming()
@@ -45,6 +44,23 @@ impl ConnectionListener {
     /// Returns local listening address.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Construct a list of listening addresses.
+    /// Localhost address is excluded.
+    // TODO(povilas): return HashSet instead
+    pub fn addrs(&self) -> io::Result<Vec<SocketAddr>> {
+        let interfaces = get_if_addrs()?;
+        let addrs = interfaces
+            .iter()
+            .filter_map(|interface| match interface.addr {
+                IfAddr::V4(ref ifv4_addr) => Some(ifv4_addr.ip),
+                IfAddr::V6(_) => None,
+            })
+            .filter(|ip| !ip.is_loopback())
+            .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, self.local_addr.port())))
+            .collect();
+        Ok(addrs)
     }
 }
 
@@ -124,11 +140,7 @@ mod tests {
 
             let _thread = std::thread::spawn(move || {
                 let (our_pk, our_sk) = gen_encrypt_keypair();
-                let listener = unwrap!(ConnectionListener::bind(
-                    &addr!("127.0.0.1:0"),
-                    our_sk,
-                    our_pk
-                ));
+                let listener = unwrap!(ConnectionListener::bind(0, our_sk, our_pk));
                 let listener_addr = ipv4_addr(127, 0, 0, 1, listener.port());
                 let listener_info = PeerInfo::new(listener_addr, our_pk);
                 unwrap!(addr_tx.send(listener_info));
