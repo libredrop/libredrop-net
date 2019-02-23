@@ -4,8 +4,8 @@ extern crate unwrap;
 use futures::{stream, Future, Sink, Stream};
 use libredrop_net::{connect_with, ConnectionError, ConnectionListener, Message, PeerInfo};
 use safe_crypto::gen_encrypt_keypair;
-use tokio::runtime::current_thread::Runtime;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use tokio::runtime::current_thread::Runtime;
 
 #[test]
 fn exchange_data() {

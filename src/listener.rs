@@ -79,7 +79,7 @@ fn handshake_incoming(
                 .map_err(|(e, _framed)| ConnectError::Io(e))
                 .and_then(move |(msg_opt, framed)| {
                     msg_opt
-                        .ok_or(io::ErrorKind::BrokenPipe.into())
+                        .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
                         .map_err(ConnectError::Io)
                         .map(move |msg| (framed, addr, msg))
                 })

@@ -117,7 +117,7 @@ pub fn connect_with(
                 .map_err(|(e, _framed)| ConnectError::Io(e))
                 .and_then(move |(msg_opt, framed)| {
                     msg_opt
-                        .ok_or(ConnectError::Io(io::ErrorKind::BrokenPipe.into()))
+                        .ok_or_else(|| ConnectError::Io(io::ErrorKind::BrokenPipe.into()))
                         .map(move |msg| (framed, addr, msg))
                 })
         })
@@ -130,7 +130,7 @@ pub fn connect_with(
         .and_then(|(framed, addr, msg, shared_key)| match msg {
             HandshakeMessage::AcceptConnect => Ok(Connection::new(framed, addr, shared_key)),
             HandshakeMessage::DenyConnect => Err(ConnectError::Denied),
-            msg @ _ => Err(ConnectError::UnexpectedMessage(msg)),
+            msg => Err(ConnectError::UnexpectedMessage(msg)),
         })
         .into_boxed()
 }
