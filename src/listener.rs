@@ -48,8 +48,7 @@ impl ConnectionListener {
 
     /// Construct a list of listening addresses.
     /// Localhost address is excluded.
-    // TODO(povilas): return HashSet instead
-    pub fn addrs(&self) -> io::Result<Vec<SocketAddr>> {
+    pub fn addrs(&self) -> io::Result<HashSet<SocketAddr>> {
         let interfaces = get_if_addrs()?;
         let addrs = interfaces
             .iter()
