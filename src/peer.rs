@@ -1,7 +1,7 @@
 use crate::message::{HandshakeMessage, Message};
 use crate::priv_prelude::*;
 use bytes::Bytes;
-use futures::{future, AsyncSink, Poll, Sink};
+use futures::{stream, AsyncSink, Poll, Sink};
 use safe_crypto::SharedSecretKey;
 use tokio::codec::{Framed, LengthDelimitedCodec};
 use tokio::net::TcpStream;
@@ -27,6 +27,11 @@ quick_error! {
         }
         UnexpectedMessage(msg: HandshakeMessage) {
             display("Unexpected message received: {:?}", msg)
+        }
+        /// All TCP connection attempts failed.
+        AllAttemptsFailed(e: Vec<io::Error>) {
+            display("I/O error: {:?}", e)
+            from()
         }
     }
 }
@@ -65,67 +70,54 @@ impl PeerInfo {
     }
 }
 
-/// Tries given expression. Returns boxed future error on failure.
-macro_rules! try_bfut {
-    ($e:expr) => {
-        match $e {
-            Ok(t) => t,
-            Err(e) => return future::err(e).into_boxed(),
-        }
-    };
-}
-
 /// Established connection.
+#[derive(Debug)]
 pub struct Connection {
     stream: Framed<TcpStream, LengthDelimitedCodec>,
     peer_addr: SocketAddr,
     shared_key: SharedSecretKey,
 }
 
-/// Attempts the connection with the given peer. Executes encrypted handshake and everything.
-pub fn connect_with(
-    peer: &PeerInfo,
+/// Attempts the connection with the given peers including encrypted handshake
+/// The first successful connection is returned.
+pub fn connect_first_ok(
+    peers: HashSet<PeerInfo>,
     our_sk: SecretEncryptKey,
     our_pk: PublicEncryptKey,
 ) -> impl Future<Item = Connection, Error = ConnectError> {
-    let connect_msg = try_bfut!(peer
-        .pub_key
-        .anonymously_encrypt(&HandshakeMessage::Connect(our_pk))
-        .map_err(ConnectError::Crypto));
-    let connect_msg = Bytes::from(connect_msg);
-    let shared_key = our_sk.shared_secret(&peer.pub_key);
-
-    TcpStream::connect(&peer.addr)
-        .map_err(ConnectError::Io)
-        .and_then(|stream| {
-            stream
-                .peer_addr()
-                .map(|addr| (stream, addr))
-                .map_err(ConnectError::Io)
-        })
-        // TODO(povilas): see if we can pass addr in some future/task context
-        .map(|(stream, addr)| (Framed::new(stream, LengthDelimitedCodec::new()), addr))
-        .and_then(|(framed, addr)| {
+    stream::iter_ok(peers)
+        .and_then(|peer| TcpStream::connect(&peer.addr).map(|stream| Ok((stream, peer))))
+        .buffer_unordered(16)
+        .first_ok()
+        .map_err(ConnectError::AllAttemptsFailed)
+        // TODO(povilas): see if we can pass addr in some future/task context. See futures 0.3
+        .map(|(stream, peer_info)| (Framed::new(stream, LengthDelimitedCodec::new()), peer_info))
+        .and_then(move |(framed, peer_info)| {
+            let connect_msg = unwrap!(peer_info
+                .pub_key
+                .anonymously_encrypt(&HandshakeMessage::Connect(our_pk))
+                .map(Bytes::from));
             framed
                 .send(connect_msg)
                 .map_err(ConnectError::Io)
-                .map(move |framed| (framed, addr))
+                .map(move |framed| (framed, peer_info))
         })
-        .and_then(|(framed, addr)| {
+        .and_then(|(framed, peer_info)| {
             framed
                 .into_future()
                 .map_err(|(e, _framed)| ConnectError::Io(e))
                 .and_then(move |(msg_opt, framed)| {
                     msg_opt
                         .ok_or_else(|| ConnectError::Io(io::ErrorKind::BrokenPipe.into()))
-                        .map(move |msg| (framed, addr, msg))
+                        .map(move |msg| (framed, peer_info, msg))
                 })
         })
-        .and_then(move |(framed, addr, msg)| {
+        .and_then(move |(framed, peer_info, msg)| {
+            let shared_key = our_sk.shared_secret(&peer_info.pub_key);
             shared_key
                 .decrypt(&msg)
                 .map_err(ConnectError::Crypto)
-                .map(|msg| (framed, addr, msg, shared_key))
+                .map(|msg| (framed, peer_info.addr, msg, shared_key))
         })
         .and_then(|(framed, addr, msg, shared_key)| match msg {
             HandshakeMessage::AcceptConnect => Ok(Connection::new(framed, addr, shared_key)),

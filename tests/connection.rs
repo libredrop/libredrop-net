@@ -1,8 +1,10 @@
 #[macro_use]
 extern crate unwrap;
+#[macro_use]
+extern crate maplit;
 
 use futures::{stream, Future, Sink, Stream};
-use libredrop_net::{connect_with, ConnectionError, ConnectionListener, Message, PeerInfo};
+use libredrop_net::{connect_first_ok, ConnectionError, ConnectionListener, Message, PeerInfo};
 use safe_crypto::gen_encrypt_keypair;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::runtime::current_thread::Runtime;
@@ -19,7 +21,7 @@ fn exchange_data() {
         .map(|(conn_opt, _listener)| unwrap!(conn_opt))
         .map_err(|(e, _listener)| panic!(e));
     let (our_pk, our_sk) = gen_encrypt_keypair();
-    let connect = connect_with(&listener_info, our_sk, our_pk).join(accept_conn);
+    let connect = connect_first_ok(hashset! {listener_info}, our_sk, our_pk).join(accept_conn);
 
     let mut evloop = unwrap!(Runtime::new());
     let (conn1, conn2) = unwrap!(evloop.block_on(connect));
