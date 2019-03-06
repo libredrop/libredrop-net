@@ -3,6 +3,9 @@
 //! platforms. So it enables you to easilly exchange files between Linux <--> Android, iOS <-->
 //! Windows, etc.
 
+#![deny(bare_trait_objects)]
+#![allow(clippy::implicit_hasher)]
+
 extern crate future_utils;
 extern crate futures;
 extern crate get_if_addrs;
