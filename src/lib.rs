@@ -3,6 +3,9 @@
 //! platforms. So it enables you to easilly exchange files between Linux <--> Android, iOS <-->
 //! Windows, etc.
 
+#![deny(bare_trait_objects)]
+#![allow(clippy::implicit_hasher)]
+
 extern crate future_utils;
 extern crate futures;
 extern crate get_if_addrs;
@@ -24,6 +27,9 @@ extern crate void;
 #[cfg(test)]
 #[macro_use]
 extern crate hamcrest2;
+#[cfg(test)]
+#[macro_use]
+extern crate maplit;
 
 mod listener;
 mod message;
@@ -35,7 +41,7 @@ mod utils;
 
 pub use crate::listener::ConnectionListener;
 pub use crate::message::Message;
-pub use crate::peer::{connect_with, ConnectError, Connection, ConnectionError, PeerInfo};
+pub use crate::peer::{connect_first_ok, ConnectError, Connection, ConnectionError, PeerInfo};
 pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
 
 use maidsafe_utilities::serialisation::SerialisationError;

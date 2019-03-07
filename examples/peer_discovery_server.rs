@@ -20,6 +20,7 @@ extern crate safe_crypto;
 use get_if_addrs::{get_if_addrs, IfAddr};
 use libredrop_net::DiscoveryServer;
 use safe_crypto::gen_encrypt_keypair;
+use std::collections::HashSet;
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
 use tokio::prelude::Future;
@@ -42,7 +43,7 @@ fn main() -> io::Result<()> {
 }
 
 /// Construct a list of fake listening addresses.
-fn our_addrs(with_port: u16) -> io::Result<Vec<SocketAddr>> {
+fn our_addrs(with_port: u16) -> io::Result<HashSet<SocketAddr>> {
     let interfaces = get_if_addrs()?;
     let addrs = interfaces
         .iter()

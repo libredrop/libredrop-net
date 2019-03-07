@@ -124,7 +124,7 @@ impl Stream for ConnectionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer::connect_with;
+    use crate::peer::connect_first_ok;
     use crate::utils::ipv4_addr;
     use safe_crypto::gen_encrypt_keypair;
     use tokio::runtime::current_thread::Runtime;
@@ -155,7 +155,7 @@ mod tests {
 
             let (our_pk, our_sk) = gen_encrypt_keypair();
             let listener_info = unwrap!(addr_rx.recv());
-            let task = connect_with(&listener_info, our_sk, our_pk);
+            let task = connect_first_ok(hashset! {listener_info}, our_sk, our_pk);
             let mut evloop = unwrap!(Runtime::new());
             unwrap!(evloop.block_on(task));
 
