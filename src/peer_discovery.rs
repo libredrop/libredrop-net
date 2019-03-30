@@ -152,6 +152,7 @@ impl DiscoveryServer {
     fn on_packet_recv(&mut self, buf: &[u8], sender_addr: SocketAddr) {
         match bincode::deserialize(buf) {
             Ok(DiscoveryMsg::Request(their_pk)) => {
+                debug!("Received service discovery request from {}", sender_addr);
                 // don't respond to ourselves
                 if their_pk != self.our_pk {
                     self.clients.push((sender_addr, their_pk))
@@ -258,7 +259,9 @@ impl ShoutForPeers {
         while let Some(addr) = self.to_send.pop() {
             let socket = unwrap!(sockets.get_mut(&addr));
             match socket.poll_send_to(&self.request[..], &addr) {
-                Ok(Async::Ready(_)) => (),
+                Ok(Async::Ready(_)) => {
+                    debug!("Service discovery request sent to {}", addr);
+                }
                 Ok(Async::NotReady) => resend.push(addr),
                 Err(e) => {
                     // TODO(povilas): add to self.errors
