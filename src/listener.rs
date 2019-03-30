@@ -7,9 +7,9 @@ use tokio::codec::{Framed, LengthDelimitedCodec};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::message::HandshakeMessage;
-use crate::peer::{ConnectError, Connection};
 use crate::priv_prelude::*;
 use crate::utils::ipv4_addr;
+use crate::{ConnectError, Connection};
 
 /// Listens for incoming connections.
 pub struct ConnectionListener {
@@ -123,7 +123,7 @@ impl Stream for ConnectionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer::connect_first_ok;
+    use crate::connect_first_ok;
     use crate::utils::ipv4_addr;
     use safe_crypto::gen_encrypt_keypair;
     use tokio::runtime::current_thread::Runtime;
