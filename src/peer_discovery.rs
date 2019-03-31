@@ -460,7 +460,7 @@ mod tests {
                 PeerInfo::new(addr!("127.0.0.1:1234"), server_pk),
             ];
             match evloop.block_on(task) {
-                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs[0], eq(&exp_addrs)),
+                Ok((their_addrs, _server_task)) => assert_eq!(their_addrs[0], exp_addrs),
                 _ => panic!("Peer discovery failed"),
             }
         }
@@ -513,7 +513,7 @@ mod tests {
                 hashset![PeerInfo::new(addr!("192.168.1.100:1234"), server_pk)],
             ];
             match evloop.block_on(task) {
-                Ok((their_addrs, _server_task)) => assert_that!(&their_addrs, eq(&exp_addrs)),
+                Ok((their_addrs, _server_task)) => assert_eq!(their_addrs, exp_addrs),
                 _ => panic!("Peer discovery failed"),
             }
         }
