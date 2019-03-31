@@ -11,7 +11,6 @@ extern crate futures;
 extern crate get_if_addrs;
 extern crate maidsafe_utilities;
 extern crate safe_crypto;
-extern crate tokio;
 #[macro_use]
 extern crate serde_derive;
 extern crate bytes;
@@ -45,13 +44,13 @@ mod utils;
 pub use crate::connect::{connect_first_ok, ConnectError, Connection, ConnectionError};
 pub use crate::listener::ConnectionListener;
 pub use crate::message::Message;
-pub use crate::peer::PeerInfo;
+pub use crate::peer::{Peer, PeerEvent, PeerInfo};
 pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
 
 use maidsafe_utilities::serialisation::SerialisationError;
 use std::io;
 
-// TODO(povilas): use failure crate
+// TODO(povilas): use err-derive crate
 quick_error! {
     #[derive(Debug)]
     pub enum Error {
@@ -75,6 +74,12 @@ quick_error! {
         /// Data (de)serialisation error.
         Serialisation(e: SerialisationError) {
             display("Serialisation error: {}", e)
+            cause(e)
+            from()
+        }
+        /// Connection failed.
+        Connect(e: ConnectError) {
+            display("Connection failed: {}", e)
             cause(e)
             from()
         }
