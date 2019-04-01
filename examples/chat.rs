@@ -9,21 +9,15 @@
 extern crate log;
 #[macro_use]
 extern crate unwrap;
-#[macro_use]
-extern crate maplit;
 
 use chrono::Local;
 use future_utils::{mpsc, BoxFuture, FutureExt};
 use futures::{future, Future, Sink, Stream};
 use hex;
-use libredrop_net::{
-    connect_first_ok, discover_peers, Connection, ConnectionListener, Message, PeerInfo,
-};
+use libredrop_net::{Connection, Message, Peer, PeerEvent, PeerInfo};
 use regex::Regex;
-use safe_crypto::{gen_encrypt_keypair, PublicEncryptKey, SecretEncryptKey};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::net::SocketAddr;
 use std::{io, thread};
 use tokio::runtime::current_thread::Runtime;
 use void::Void;
@@ -44,24 +38,21 @@ macro_rules! out {
 enum Event {
     /// Input from stdin received.
     Stdin(String),
-    DiscoveredPeers(HashSet<PeerInfo>),
-    NewConnection(Connection),
+    FromPeer(PeerEvent),
 }
 
 fn main() {
     env_logger::init();
     let mut evloop = unwrap!(Runtime::new());
 
-    let (events_tx, events_rx) = mpsc::unbounded();
     let (quit_tx, quit_rx) = mpsc::unbounded();
-    let mut app = App::new(quit_tx);
-    app.spawn_conn_listener(&mut evloop, events_tx.clone());
-    app.spawn_peer_discovery(&mut evloop, events_tx.clone());
+    let (events_tx, events_rx) = mpsc::unbounded();
+    let mut app = App::new(&mut evloop, quit_tx, events_tx.clone());
 
     let handle_events = events_rx.for_each(move |event| app.handle_event(event));
     let (read_lines, _thread) = read_lines();
     let handle_stdin = read_lines.map(Event::Stdin).for_each(move |event| {
-        unwrap!(events_tx.unbounded_send(event));
+        let _ = events_tx.unbounded_send(event);
         Ok(())
     });
     let quit = quit_rx.into_future().map(|_| ((), ())).map_err(|(e, _)| e);
@@ -73,74 +64,45 @@ struct App {
     quit_tx: mpsc::UnboundedSender<()>,
     /// Peer addresses associated with their ID. One peer can have multiple addresses.
     peers: HashMap<String, HashSet<PeerInfo>>,
-    our_pk: PublicEncryptKey,
-    our_sk: SecretEncryptKey,
-    listener_addrs: Option<HashSet<SocketAddr>>,
+    peer: Peer,
 }
 
 impl App {
-    fn new(quit_tx: mpsc::UnboundedSender<()>) -> Self {
-        let (our_pk, our_sk) = gen_encrypt_keypair();
+    fn new(
+        evloop: &mut Runtime,
+        quit_tx: mpsc::UnboundedSender<()>,
+        events_tx: mpsc::UnboundedSender<Event>,
+    ) -> Self {
+        let (mut peer, peer_events_rx) = Peer::new(6000);
+
+        let handle_peer_events = peer_events_rx
+            .map(Event::FromPeer)
+            .for_each(move |event| {
+                let _ = events_tx.unbounded_send(event);
+                Ok(())
+            })
+            .map_err(|_| ());
+        evloop.spawn(handle_peer_events);
+
+        unwrap!(peer.start(evloop));
+
         Self {
             quit_tx,
             peers: Default::default(),
-            our_pk,
-            our_sk,
-            listener_addrs: None,
+            peer,
         }
-    }
-
-    fn spawn_conn_listener(
-        &mut self,
-        evloop: &mut Runtime,
-        events_tx: mpsc::UnboundedSender<Event>,
-    ) {
-        let listener = unwrap!(ConnectionListener::bind(
-            0,
-            self.our_sk.clone(),
-            self.our_pk
-        ));
-        let listener_addrs = unwrap!(listener.addrs());
-        let accept_connections = listener
-            .for_each(move |conn| {
-                let _ = events_tx.unbounded_send(Event::NewConnection(conn));
-                Ok(())
-            })
-            .log_error(log::Level::Error, "Connection listener errored")
-            .infallible();
-        evloop.spawn(accept_connections);
-        self.listener_addrs = Some(listener_addrs);
-    }
-
-    fn spawn_peer_discovery(&self, evloop: &mut Runtime, events_tx: mpsc::UnboundedSender<Event>) {
-        let listener_addrs = self
-            .listener_addrs
-            .as_ref()
-            .map_or_else(|| hashset![], |addrs| addrs.clone());
-        let discover_peers_on_lan = unwrap!(discover_peers(
-            6000,
-            listener_addrs,
-            &self.our_pk,
-            &self.our_sk
-        ))
-        .map(move |mut addrs| {
-            let addrs = addrs.drain().collect();
-            let _ = events_tx.unbounded_send(Event::DiscoveredPeers(addrs));
-        })
-        .for_each(|_| Ok(()))
-        .log_error(log::Level::Error, "Peer discovery errored")
-        .infallible();
-        evloop.spawn(discover_peers_on_lan);
     }
 
     fn handle_event(&mut self, event: Event) -> BoxFuture<(), Void> {
         match event {
             Event::Stdin(ln) => self.handle_cmd(ln),
-            Event::DiscoveredPeers(peers) => {
-                self.add_peer_addrs(peers);
-                future::ok(()).into_boxed()
-            }
-            Event::NewConnection(conn) => self.handle_conn(conn).into_boxed(),
+            Event::FromPeer(event) => match event {
+                PeerEvent::DiscoveredPeers(peers) => {
+                    self.add_peer_addrs(peers);
+                    future::ok(()).into_boxed()
+                }
+                PeerEvent::NewConnection(conn) => self.handle_conn(conn).into_boxed(),
+            },
         }
     }
 
@@ -189,9 +151,8 @@ impl App {
         endpoints: HashSet<PeerInfo>,
         text: String,
     ) -> impl Future<Item = (), Error = Void> {
-        let our_sk = self.our_sk.clone();
-        let our_pk = self.our_pk;
-        connect_first_ok(endpoints, our_sk.clone(), our_pk)
+        self.peer
+            .connect_to(endpoints)
             .map_err(|errs| {
                 info!("All connection attempts failed: {:?}", errs);
                 0
@@ -268,7 +229,7 @@ fn read_lines() -> (
         let stdin = io::stdin();
         let mut line = String::new();
         unwrap!(stdin.read_line(&mut line));
-        let line = line.trim_right().into();
+        let line = line.trim_end().into();
 
         if tx.unbounded_send(line).is_err() {
             break;

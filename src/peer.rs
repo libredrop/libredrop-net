@@ -1,58 +1,10 @@
-use crate::message::{HandshakeMessage, Message};
-use crate::priv_prelude::*;
-use bytes::Bytes;
-use futures::{stream, AsyncSink, Poll, Sink};
-use safe_crypto::SharedSecretKey;
-use tokio::codec::{Framed, LengthDelimitedCodec};
-use tokio::net::TcpStream;
-
-/// Failure to connect.
-quick_error! {
-    #[derive(Debug)]
-    pub enum ConnectError {
-        /// I/O related error.
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Crypto related error.
-        Crypto(e: safe_crypto::Error) {
-            display("Crypto related error: {}", e)
-            from()
-        }
-        /// Connection was denied.
-        Denied {
-            display("Connection was denied by remote peer")
-        }
-        UnexpectedMessage(msg: HandshakeMessage) {
-            display("Unexpected message received: {:?}", msg)
-        }
-        /// All TCP connection attempts failed.
-        AllAttemptsFailed(e: Vec<io::Error>) {
-            display("I/O error: {:?}", e)
-            from()
-        }
-    }
-}
-
-/// Error during communications over connection.
-quick_error! {
-    #[derive(Debug)]
-    pub enum ConnectionError {
-        /// I/O related error.
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Crypto related error.
-        Crypto(e: safe_crypto::Error) {
-            display("Crypto related error: {}", e)
-            from()
-        }
-    }
-}
+use crate::{connect_first_ok, discover_peers, Connection, ConnectionListener, Error};
+use future_utils::{drop_notify, mpsc, DropNotify, FutureExt};
+use futures::{Future, Stream};
+use safe_crypto::{gen_encrypt_keypair, PublicEncryptKey, SecretEncryptKey};
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use tokio::runtime::current_thread::Runtime;
 
 /// Information necessary to connect to peer.
 #[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]
@@ -70,119 +22,107 @@ impl PeerInfo {
     }
 }
 
-/// Established connection.
+/// Peer generated event.
 #[derive(Debug)]
-pub struct Connection {
-    stream: Framed<TcpStream, LengthDelimitedCodec>,
-    peer_addr: SocketAddr,
-    shared_key: SharedSecretKey,
+#[allow(clippy::large_enum_variant)]
+pub enum PeerEvent {
+    DiscoveredPeers(HashSet<PeerInfo>),
+    NewConnection(Connection),
 }
 
-/// Attempts the connection with the given peers including encrypted handshake
-/// The first successful connection is returned.
-pub fn connect_first_ok(
-    peers: HashSet<PeerInfo>,
-    our_sk: SecretEncryptKey,
+/// High level API to construct and control a peer who will be connecting and exchanging data with
+/// other peers.
+pub struct Peer {
     our_pk: PublicEncryptKey,
-) -> impl Future<Item = Connection, Error = ConnectError> {
-    stream::iter_ok(peers)
-        .and_then(|peer| TcpStream::connect(&peer.addr).map(|stream| Ok((stream, peer))))
-        .buffer_unordered(16)
-        .first_ok()
-        .map_err(ConnectError::AllAttemptsFailed)
-        // TODO(povilas): see if we can pass addr in some future/task context. See futures 0.3
-        .map(|(stream, peer_info)| (Framed::new(stream, LengthDelimitedCodec::new()), peer_info))
-        .and_then(move |(framed, peer_info)| {
-            let connect_msg = unwrap!(peer_info
-                .pub_key
-                .anonymously_encrypt(&HandshakeMessage::Connect(our_pk))
-                .map(Bytes::from));
-            framed
-                .send(connect_msg)
-                .map_err(ConnectError::Io)
-                .map(move |framed| (framed, peer_info))
-        })
-        .and_then(|(framed, peer_info)| {
-            framed
-                .into_future()
-                .map_err(|(e, _framed)| ConnectError::Io(e))
-                .and_then(move |(msg_opt, framed)| {
-                    msg_opt
-                        .ok_or_else(|| ConnectError::Io(io::ErrorKind::BrokenPipe.into()))
-                        .map(move |msg| (framed, peer_info, msg))
-                })
-        })
-        .and_then(move |(framed, peer_info, msg)| {
-            let shared_key = our_sk.shared_secret(&peer_info.pub_key);
-            shared_key
-                .decrypt(&msg)
-                .map_err(ConnectError::Crypto)
-                .map(|msg| (framed, peer_info.addr, msg, shared_key))
-        })
-        .and_then(|(framed, addr, msg, shared_key)| match msg {
-            HandshakeMessage::AcceptConnect => Ok(Connection::new(framed, addr, shared_key)),
-            HandshakeMessage::DenyConnect => Err(ConnectError::Denied),
-            msg => Err(ConnectError::UnexpectedMessage(msg)),
-        })
-        .into_boxed()
+    our_sk: SecretEncryptKey,
+    listener_addrs: HashSet<SocketAddr>,
+    /// Peer specific events will be sent over this channel.
+    events_tx: mpsc::UnboundedSender<PeerEvent>,
+    service_discovery_port: u16,
+
+    _drop_tx_listener: Option<DropNotify>,
+    _drop_tx_discovery: Option<DropNotify>,
 }
 
-impl Connection {
-    pub fn new(
-        stream: Framed<TcpStream, LengthDelimitedCodec>,
-        peer_addr: SocketAddr,
-        shared_key: SharedSecretKey,
-    ) -> Self {
-        Self {
-            stream,
-            peer_addr,
-            shared_key,
-        }
-    }
+impl Peer {
+    /// Constructs new peer and in addition returns peer event receiver.
+    pub fn new(service_discovery_port: u16) -> (Self, mpsc::UnboundedReceiver<PeerEvent>) {
+        let (our_pk, our_sk) = gen_encrypt_keypair();
+        let (events_tx, events_rx) = mpsc::unbounded();
 
-    /// Returns address of remote peer on the other side of this connection.
-    pub fn peer_addr(&self) -> SocketAddr {
-        self.peer_addr
-    }
-}
-
-impl Stream for Connection {
-    type Item = Message;
-    type Error = ConnectionError;
-
-    /// Receive a message from socket, decrypt it and pass through a stream.
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.stream.poll() {
-            Ok(Async::Ready(Some(buf))) => match self.shared_key.decrypt(&buf) {
-                Ok(msg) => Ok(Async::Ready(Some(msg))),
-                Err(e) => Err(ConnectionError::Crypto(e)),
+        (
+            Self {
+                our_pk,
+                our_sk,
+                listener_addrs: Default::default(),
+                events_tx,
+                service_discovery_port,
+                _drop_tx_listener: None,
+                _drop_tx_discovery: None,
             },
-            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(e) => Err(ConnectionError::Io(e)),
-        }
-    }
-}
-
-impl Sink for Connection {
-    type SinkItem = Message;
-    type SinkError = ConnectionError;
-
-    fn start_send(
-        &mut self,
-        item: Self::SinkItem,
-    ) -> Result<AsyncSink<Self::SinkItem>, Self::SinkError> {
-        let buf = self
-            .shared_key
-            .encrypt(&item)
-            .map_err(ConnectionError::Crypto)?;
-        self.stream
-            .start_send(Bytes::from(buf))
-            .map_err(ConnectionError::Io)
-            .map(|res| res.map(|_| item))
+            events_rx,
+        )
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        self.stream.poll_complete().map_err(ConnectionError::Io)
+    /// Starts listening for incoming connections and peer discovery process which will find
+    /// libredrop peers on LAN.
+    pub fn start(&mut self, evloop: &mut Runtime) -> Result<(), Error> {
+        self.spawn_conn_listener(evloop)?;
+        self.spawn_peer_discovery(evloop)
+    }
+
+    /// Attempts to connect to multiple endpoints of a given peer and returns the first successful
+    /// connction.
+    pub fn connect_to(
+        &self,
+        endpoints: HashSet<PeerInfo>,
+    ) -> impl Future<Item = Connection, Error = Error> {
+        connect_first_ok(endpoints, self.our_sk.clone(), self.our_pk).map_err(Error::Connect)
+    }
+
+    /// Starts listening for incoming connections in the background.
+    fn spawn_conn_listener(&mut self, evloop: &mut Runtime) -> Result<(), Error> {
+        let listener = ConnectionListener::bind(0, self.our_sk.clone(), self.our_pk)?;
+        self.listener_addrs = listener.addrs()?;
+
+        let (drop_tx, drop_rx) = drop_notify();
+        self._drop_tx_listener = Some(drop_tx);
+
+        let events_tx = self.events_tx.clone();
+        let accept_connections = listener
+            .for_each(move |conn| {
+                let _ = events_tx.unbounded_send(PeerEvent::NewConnection(conn));
+                Ok(())
+            })
+            .log_error(log::Level::Error, "Connection listener errored")
+            .until(drop_rx)
+            .map(|_| ())
+            .infallible();
+        evloop.spawn(accept_connections);
+        Ok(())
+    }
+
+    fn spawn_peer_discovery(&mut self, evloop: &mut Runtime) -> Result<(), Error> {
+        let events_tx = self.events_tx.clone();
+        let (drop_tx, drop_rx) = drop_notify();
+        self._drop_tx_discovery = Some(drop_tx);
+
+        let discover_peers_on_lan = discover_peers(
+            self.service_discovery_port,
+            self.listener_addrs.clone(),
+            &self.our_pk,
+            &self.our_sk,
+        )?
+        .map(move |mut addrs| {
+            let addrs = addrs.drain().collect();
+            let _ = events_tx.unbounded_send(PeerEvent::DiscoveredPeers(addrs));
+        })
+        .for_each(|_| Ok(()))
+        .log_error(log::Level::Error, "Peer discovery errored")
+        .until(drop_rx)
+        .map(|_| ())
+        .infallible();
+        evloop.spawn(discover_peers_on_lan);
+        Ok(())
     }
 }
