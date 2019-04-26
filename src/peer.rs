@@ -1,6 +1,7 @@
+use crate::utils::async_read_file;
 use crate::{connect_first_ok, discover_peers, Connection, ConnectionListener, Error};
 use future_utils::{drop_notify, mpsc, DropNotify, FutureExt};
-use futures::{Future, Stream};
+use futures::{Future, Sink, Stream};
 use safe_crypto::{gen_encrypt_keypair, PublicEncryptKey, SecretEncryptKey};
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -71,13 +72,35 @@ impl Peer {
         self.spawn_peer_discovery(evloop)
     }
 
-    /// Attempts to connect to multiple endpoints of a given peer and returns the first successful
-    /// connction.
+    /// Returns a list of endpoints this peer is listening on.
+    pub fn endpoints(&self) -> HashSet<PeerInfo> {
+        self.listener_addrs
+            .iter()
+            .map(|addr| PeerInfo::new(*addr, self.our_pk))
+            .collect()
+    }
+
+    /// Attempts to connect to a peer via one of the given contacts and returns the first successful
+    /// connection.
     pub fn connect_to(
         &self,
         endpoints: HashSet<PeerInfo>,
     ) -> impl Future<Item = Connection, Error = Error> {
         connect_first_ok(endpoints, self.our_sk.clone(), self.our_pk).map_err(Error::Connect)
+    }
+
+    /// Attempts to connect to a peer via one of the given contacts and sends a file to it.
+    pub fn send_file_to(
+        &self,
+        endpoints: HashSet<PeerInfo>,
+        fname: &str,
+    ) -> impl Future<Item = (), Error = Error> {
+        let fname = fname.to_string();
+        self.connect_to(endpoints).and_then(|conn| {
+            conn.sink_map_err(Error::Connection)
+                .send_all(async_read_file(fname))
+                .map(|(_conn, _read)| ())
+        })
     }
 
     /// Starts listening for incoming connections in the background.

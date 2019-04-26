@@ -16,14 +16,14 @@ pub enum HandshakeMessage {
 /// Message over established connection.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum Message {
+    /// Generic data.
     Data(Vec<u8>),
-}
-
-impl Message {
-    /// Try to convert message into data buffer.
-    pub fn into_data(self) -> Option<Vec<u8>> {
-        match self {
-            Message::Data(buf) => Some(buf),
-        }
-    }
+    /// This message indicates file transfer start.
+    FileStart(String, Vec<u8>),
+    /// Chunk of file currently being sent through the connection. Note that only one file can
+    /// be sent over single connection at a time. This might change in the future with the adoption
+    /// of QUIC protocol.
+    FileChunk(Vec<u8>),
+    /// Indicates that all file chunks were sent.
+    FileEnd,
 }
