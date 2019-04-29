@@ -75,7 +75,7 @@ pub fn connect_first_ok(
     our_pk: PublicEncryptKey,
 ) -> impl Future<Item = Connection, Error = ConnectError> {
     stream::iter_ok(peers)
-        .and_then(|peer| TcpStream::connect(&peer.addr).map(|stream| Ok((stream, peer))))
+        .map(|peer| TcpStream::connect(&peer.addr).map(|stream| (stream, peer)))
         .buffer_unordered(16)
         .first_ok()
         .map_err(ConnectError::AllAttemptsFailed)
