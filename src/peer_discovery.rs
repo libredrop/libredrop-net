@@ -1,6 +1,7 @@
 use crate::priv_prelude::*;
 use crate::utils::ipv4_addr;
 use bincode;
+use future_utils::{BoxSendFuture, BoxSendStream};
 use futures::stream::{self, Stream};
 use get_if_addrs::{get_if_addrs, IfAddr};
 use std::net::SocketAddrV4;
@@ -16,7 +17,7 @@ macro_rules! try_bstream {
     ($e:expr) => {
         match $e {
             Ok(t) => t,
-            Err(e) => return stream::iter_result(vec![Err(e)]).into_boxed(),
+            Err(e) => return stream::iter_result(vec![Err(e)]).into_send_boxed(),
         }
     };
 }
@@ -37,7 +38,7 @@ struct DiscoverPeers {
     // future that never resolves
     server: DiscoveryServer,
     // stream of peer discovery requests awaiting for response
-    send_reqs: BoxStream<HashSet<PeerInfo>, DiscoveryError>,
+    send_reqs: BoxSendStream<HashSet<PeerInfo>, DiscoveryError>,
 }
 
 impl DiscoverPeers {
@@ -48,7 +49,7 @@ impl DiscoverPeers {
         our_sk: &SecretEncryptKey,
     ) -> Result<Self, DiscoveryError> {
         let server = DiscoveryServer::try_new(port, our_addrs, our_pk)?;
-        let send_reqs = shout_for_peers(port, *our_pk, our_sk.clone()).into_boxed();
+        let send_reqs = shout_for_peers(port, *our_pk, our_sk.clone());
         Ok(Self { server, send_reqs })
     }
 }
@@ -210,10 +211,9 @@ pub fn shout_for_peers(
     port: u16,
     our_pk: PublicEncryptKey,
     our_sk: SecretEncryptKey,
-) -> BoxStream<HashSet<PeerInfo>, DiscoveryError> {
-    try_bstream!(ShoutForPeers::try_new(port, our_pk, our_sk)
-        .map_err(DiscoveryError::Io)
-        .map(|stream| stream.into_boxed()))
+) -> BoxSendStream<HashSet<PeerInfo>, DiscoveryError> {
+    try_bstream!(ShoutForPeers::try_new(port, our_pk, our_sk).map_err(DiscoveryError::Io))
+        .into_send_boxed()
 }
 
 /// A stream that sends peer discovery messages to all network interfaces and indefinitely until it
@@ -229,7 +229,7 @@ struct ShoutForPeers {
     to_send: Vec<SocketAddr>,
     /// Stream results.
     results: Vec<HashSet<PeerInfo>>,
-    timeout: BoxFuture<(), ()>,
+    timeout: BoxSendFuture<(), ()>,
 }
 
 impl ShoutForPeers {
@@ -379,10 +379,10 @@ fn broadcast_sock() -> io::Result<UdpSocket> {
     Ok(sock)
 }
 
-fn new_timeout(secs: u64) -> BoxFuture<(), ()> {
+fn new_timeout(secs: u64) -> BoxSendFuture<(), ()> {
     Timeout::new(empty(), Duration::from_secs(secs))
         .then(|_res: Result<(), TimeoutError<()>>| Ok(()))
-        .into_boxed()
+        .into_send_boxed()
 }
 
 #[cfg(test)]

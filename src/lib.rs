@@ -77,8 +77,14 @@ quick_error! {
             cause(e)
             from()
         }
-        /// Connection failed.
+        /// Failed to establish connection.
         Connect(e: ConnectError) {
+            display("Connection handshake failed: {}", e)
+            cause(e)
+            from()
+        }
+        /// Active connection failure.
+        Connection(e: ConnectionError) {
             display("Connection failed: {}", e)
             cause(e)
             from()
