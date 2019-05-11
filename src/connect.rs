@@ -1,7 +1,7 @@
 use crate::message::{HandshakeMessage, Message};
 use crate::peer::PeerInfo;
 use bytes::Bytes;
-use future_utils::{FutureExt, StreamExt};
+use future_utils::StreamExt;
 use futures::{stream, Async, AsyncSink, Future, Poll, Sink, Stream};
 use quick_error::quick_error;
 use safe_crypto::{PublicEncryptKey, SecretEncryptKey, SharedSecretKey};
@@ -73,7 +73,7 @@ pub fn connect_first_ok(
     peers: HashSet<PeerInfo>,
     our_sk: SecretEncryptKey,
     our_pk: PublicEncryptKey,
-) -> impl Future<Item = Connection, Error = ConnectError> {
+) -> impl Future<Item = Connection, Error = ConnectError> + Send {
     stream::iter_ok(peers)
         .map(|peer| TcpStream::connect(&peer.addr).map(|stream| (stream, peer)))
         .buffer_unordered(16)
@@ -113,7 +113,6 @@ pub fn connect_first_ok(
             HandshakeMessage::DenyConnect => Err(ConnectError::Denied),
             msg => Err(ConnectError::UnexpectedMessage(msg)),
         })
-        .into_boxed()
 }
 
 impl Connection {
