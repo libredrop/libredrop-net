@@ -1,9 +1,9 @@
 use crate::message::{HandshakeMessage, Message};
 use crate::peer::PeerInfo;
 use bytes::Bytes;
+use err_derive::Error;
 use future_utils::StreamExt;
 use futures::{stream, Async, AsyncSink, Future, Poll, Sink, Stream};
-use quick_error::quick_error;
 use safe_crypto::{PublicEncryptKey, SecretEncryptKey, SharedSecretKey};
 use std::collections::HashSet;
 use std::io;
@@ -12,51 +12,33 @@ use tokio::codec::{Framed, LengthDelimitedCodec};
 use tokio::net::TcpStream;
 
 /// Failure to connect.
-quick_error! {
-    #[derive(Debug)]
-    pub enum ConnectError {
-        /// I/O related error.
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Crypto related error.
-        Crypto(e: safe_crypto::Error) {
-            display("Crypto related error: {}", e)
-            from()
-        }
-        /// Connection was denied.
-        Denied {
-            display("Connection was denied by remote peer")
-        }
-        UnexpectedMessage(msg: HandshakeMessage) {
-            display("Unexpected message received: {:?}", msg)
-        }
-        /// All TCP connection attempts failed.
-        AllAttemptsFailed(e: Vec<io::Error>) {
-            display("I/O error: {:?}", e)
-            from()
-        }
-    }
+#[derive(Debug, Error)]
+pub enum ConnectError {
+    /// I/O related error.
+    #[error(display = "I/O error: {}", _0)]
+    Io(io::Error),
+    /// Crypto related error.
+    #[error(display = "Crypto related error: {}", _0)]
+    Crypto(safe_crypto::Error),
+    /// Connection was denied.
+    #[error(display = "Connection was denied by remote peer")]
+    Denied,
+    #[error(display = "Unexpected message received: {:?}", _0)]
+    UnexpectedMessage(HandshakeMessage),
+    /// All TCP connection attempts failed.
+    #[error(display = "I/O error: {:?}", _0)]
+    AllAttemptsFailed(Vec<io::Error>),
 }
 
 /// Error during communications over connection.
-quick_error! {
-    #[derive(Debug)]
-    pub enum ConnectionError {
-        /// I/O related error.
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Crypto related error.
-        Crypto(e: safe_crypto::Error) {
-            display("Crypto related error: {}", e)
-            from()
-        }
-    }
+#[derive(Debug, Error)]
+pub enum ConnectionError {
+    /// I/O related error.
+    #[error(display = "I/O error: {}", _0)]
+    Io(io::Error),
+    /// Crypto related error.
+    #[error(display = "Crypto related error: {}", _0)]
+    Crypto(safe_crypto::Error),
 }
 
 /// Established connection.
