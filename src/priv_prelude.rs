@@ -3,7 +3,6 @@
 pub use crate::peer::PeerInfo;
 pub use future_utils::{BoxFuture, BoxStream, FutureExt, StreamExt};
 pub use futures::{Async, Future, Poll, Stream};
-pub use quick_error::quick_error;
 pub use safe_crypto::{
     gen_encrypt_keypair, Error as EncryptionError, PublicEncryptKey, SecretEncryptKey,
     SharedSecretKey,

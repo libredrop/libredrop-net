@@ -30,8 +30,6 @@ extern crate hamcrest2;
 #[macro_use]
 extern crate maplit;
 
-use quick_error::quick_error;
-
 mod connect;
 mod listener;
 mod message;
@@ -47,47 +45,40 @@ pub use crate::message::Message;
 pub use crate::peer::{Peer, PeerEvent, PeerInfo};
 pub use crate::peer_discovery::{discover_peers, shout_for_peers, DiscoveryError, DiscoveryServer};
 
+use err_derive::Error;
 use maidsafe_utilities::serialisation::SerialisationError;
 use std::io;
 
-// TODO(povilas): use err-derive crate
-quick_error! {
-    #[derive(Debug)]
-    pub enum Error {
-        /// IO error
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Peer discovery on LAN error.
-        Discovery(e: DiscoveryError) {
-            display("Peer discovery on LAN failed: {}", e)
-            cause(e)
-            from()
-        }
-        /// Crypto related error.
-        Crypto(e: safe_crypto::Error) {
-            display("Crypto related error: {}", e)
-            from()
-        }
-        /// Data (de)serialisation error.
-        Serialisation(e: SerialisationError) {
-            display("Serialisation error: {}", e)
-            cause(e)
-            from()
-        }
-        /// Failed to establish connection.
-        Connect(e: ConnectError) {
-            display("Connection handshake failed: {}", e)
-            cause(e)
-            from()
-        }
-        /// Active connection failure.
-        Connection(e: ConnectionError) {
-            display("Connection failed: {}", e)
-            cause(e)
-            from()
-        }
+#[derive(Debug, Error)]
+pub enum Error {
+    /// IO error
+    #[error(display = "I/O error: {}", _0)]
+    Io(io::Error),
+    /// Peer discovery on LAN error.
+    #[error(display = "Peer discovery on LAN failed: {}", _0)]
+    Discovery(DiscoveryError),
+    /// Crypto related error.
+    #[error(display = "Crypto related error: {}", _0)]
+    Crypto(safe_crypto::Error),
+    /// Data (de)serialisation error.
+    #[error(display = "Serialisation error: {}", _0)]
+    Serialisation(SerialisationError),
+    /// Failed to establish connection.
+    #[error(display = "Connection handshake failed: {}", _0)]
+    Connect(ConnectError),
+    /// Active connection failure.
+    #[error(display = "Connection failed: {}", _0)]
+    Connection(ConnectionError),
+}
+
+impl From<DiscoveryError> for Error {
+    fn from(e: DiscoveryError) -> Self {
+        Error::Discovery(e)
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::Io(e)
     }
 }

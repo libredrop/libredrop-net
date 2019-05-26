@@ -1,6 +1,7 @@
 use crate::priv_prelude::*;
 use crate::utils::ipv4_addr;
 use bincode;
+use err_derive::Error;
 use future_utils::{BoxSendFuture, BoxSendStream};
 use futures::stream::{self, Stream};
 use get_if_addrs::{get_if_addrs, IfAddr};
@@ -65,24 +66,26 @@ impl Stream for DiscoverPeers {
     }
 }
 
-// TODO(povilas): use failure crate for errors
 /// Peers discovery error.
-quick_error! {
-    #[derive(Debug)]
-    pub enum DiscoveryError {
-        Io(e: io::Error) {
-            display("I/O error: {}", e)
-            cause(e)
-            from()
-        }
-        SerializeFailure(e: bincode::Error) {
-            display("Serialization error: {}", e)
-            cause(e)
-            from()
-        }
-        InvalidResponse {
-            display("Ivalid response")
-        }
+#[derive(Debug, Error)]
+pub enum DiscoveryError {
+    #[error(display = "I/O error: {}", _0)]
+    Io(io::Error),
+    #[error(display = "Serialization error: {}", _0)]
+    SerializeFailure(bincode::Error),
+    #[error(display = "Ivalid response")]
+    InvalidResponse,
+}
+
+impl From<io::Error> for DiscoveryError {
+    fn from(e: io::Error) -> Self {
+        DiscoveryError::Io(e)
+    }
+}
+
+impl From<bincode::Error> for DiscoveryError {
+    fn from(e: bincode::Error) -> Self {
+        DiscoveryError::SerializeFailure(e)
     }
 }
 
@@ -99,7 +102,8 @@ impl DiscoveryMsg {
     fn serialized_request(pk: PublicEncryptKey) -> Result<Vec<u8>, DiscoveryError> {
         let msg = DiscoveryMsg::Request(pk);
         // TODO(povilas): check if serialize can actually fail
-        bincode::serialize(&msg).map_err(DiscoveryError::SerializeFailure)
+        let req = bincode::serialize(&msg)?;
+        Ok(req)
     }
 }
 
@@ -122,8 +126,8 @@ impl DiscoveryServer {
         our_addrs: HashSet<SocketAddr>,
         our_pk: &PublicEncryptKey,
     ) -> Result<Self, DiscoveryError> {
-        let listener = UdpSocket::bind(&ipv4_addr(0, 0, 0, 0, port)).map_err(DiscoveryError::Io)?;
-        let port = listener.local_addr().map_err(DiscoveryError::Io)?.port();
+        let listener = UdpSocket::bind(&ipv4_addr(0, 0, 0, 0, port))?;
+        let port = listener.local_addr()?.port();
         Ok(Self {
             listener,
             our_addrs,
@@ -199,8 +203,8 @@ impl Future for DiscoveryServer {
     type Error = DiscoveryError;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        self.poll_requests().map_err(DiscoveryError::Io)?;
-        self.poll_send_responses().map_err(DiscoveryError::Io)?;
+        self.poll_requests()?;
+        self.poll_send_responses()?;
         Ok(Async::NotReady)
     }
 }

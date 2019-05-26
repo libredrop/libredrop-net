@@ -19,8 +19,8 @@ serde_derive = "1.0.80"
 tokio = "0.1.14"
 unwrap = "1.2.1"
 void = "1.0.2"
-quick-error = "1.2.2"
 tokio-codec = "0.1.1"
+err-derive = "0.1.5"
 
 [dev-dependencies]
 env_logger = "0.6.0"
